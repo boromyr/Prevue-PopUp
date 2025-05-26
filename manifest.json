@@ -1,0 +1,106 @@
+{
+  "manifest_version": 3,
+  "name": "Prevue Popup",
+  "version": "0.4.8",
+  "description": "Popup preview for links and images with optimized performance",
+  "action": {
+    "default_title": "Prevue Popup Options",
+    "default_popup": "options.html",
+    "default_icon": {
+      "512": "pp.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "css": [
+        "prevue.css"
+      ],
+      "js": [
+        "prevue.js"
+      ],
+      "all_frames": true,
+      "run_at": "document_idle",
+      "world": "ISOLATED"
+    }
+  ],
+  "declarative_net_request": {
+    "rule_resources": [
+      {
+        "id": "disable-csp",
+        "enabled": false,
+        "path": "rules.json"
+      }
+    ]
+  },
+  "permissions": [
+    "storage",
+    "declarativeNetRequest",
+    "activeTab",
+    "scripting"
+  ],
+  "optional_permissions": [
+    "tabs",
+    "history"
+  ],
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "optional_host_permissions": [
+    "<all_urls>"
+  ],
+  "icons": {
+    "512": "pp.png"
+  },
+  "options_page": "options.html",
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "options.html",
+        "prevue.html",
+        "icons/*.png",
+        "assets/*.css",
+        "assets/*.js"
+      ],
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ]
+    }
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; img-src 'self' data: https:;"
+  },
+  "commands": {
+    "toggle-prevue": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+P",
+        "mac": "Command+Shift+P"
+      },
+      "description": "Toggle Prevue on/off for current site"
+    },
+    "open-prevue": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+Up",
+        "mac": "Command+Shift+Up"
+      },
+      "description": "Open preview for current link"
+    }
+  },
+  "omnibox": {
+    "keyword": "prevue"
+  },
+  "minimum_chrome_version": "88",
+  "externally_connectable": {
+    "matches": [
+      "https://*.prevue-extension.com/*"
+    ]
+  }
+}
