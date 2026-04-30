@@ -1,1 +1,0 @@
-document.querySelector("iframe").src = atob(location.search.substr(1));
