@@ -1,0 +1,1 @@
+document.querySelector('iframe').src = atob(location.search.slice(1))

@@ -1,17 +1,27 @@
-// Background script ottimizzato per Prevue v3
+// Background script ottimizzato per Prevue v3 - Blacklist Completa
 chrome.manifest = chrome.runtime.getManifest();
 console.clear();
 console.log(`Loaded Prevue v${chrome.manifest.version} at ${new Date()}`);
 
-// OTTIMIZZAZIONE 1: Lista di siti esclusi per evitare lag
-const EXCLUDED_SITES = [
-    // Siti di sviluppo e locali
+// BLACKLIST COMPLETA - Disabilitazione totale dell'estensione
+const COMPLETELY_BLOCKED_SITES = [
+    // Siti TI e sviluppo che causano problemi di prestazioni
     "webench.ti.com",
-    "lcsc.com",
+    // "lcsc.com",
+    "altium.com",
+    "kicad.org",
+    "github.dev",
+    "codepen.io",
+    "codesandbox.io",
+
+    // Ambienti di sviluppo locali
     "localhost",
     "127.0.0.1",
     "0.0.0.0",
     "::1",
+    "192.168.",
+    "10.0.",
+    "172.16.",
 
     // Pagine browser interne
     "chrome://",
@@ -24,78 +34,106 @@ const EXCLUDED_SITES = [
     "javascript:",
     "file://",
 
-    // Siti che causano problemi di prestazioni
+    // Store e marketplace
     "chrome.google.com",
     "addons.mozilla.org",
     "microsoftedge.microsoft.com",
     "opera.com/addons",
 
-    // Siti che potrebbero interferire con l'estensione
-    "bank.", // domini bancari generici
+    // Siti finanziari e sicurezza
+    "bank.",
     "secure.",
     "pay.",
     "payment.",
     "checkout.",
+    "paypal.com",
+    "stripe.com",
 
-    // Piattaforme che gestiscono male iframe
+    // Piattaforme video/streaming pesanti
     "netflix.com",
     "hulu.com",
     "disney.com",
+    "primevideo.com",
     "amazon.com/gp/video",
     "twitch.tv",
     "vimeo.com",
+    "tiktok.com",
 
-    // Siti ad alto carico computazionale
+    // Applicazioni CAD e design pesanti
     "maps.google.com",
     "earth.google.com",
     "colab.research.google.com",
     "figma.com",
     "canva.com",
     "miro.com",
+    "sketch.com",
+    "invisionapp.com",
 
-    // Webmail e documenti
+    // Webmail e suite office
     "mail.google.com",
     "outlook.live.com",
     "outlook.office.com",
     "docs.google.com",
     "sheets.google.com",
     "slides.google.com",
+    "office.com",
 
-    // Social media con interfacce pesanti
+    // Social media pesanti
     "web.whatsapp.com",
     "discord.com",
     "slack.com",
     "teams.microsoft.com",
     "zoom.us",
+    "meet.google.com",
+
+    // Gaming e piattaforme interactive
+    "twitch.tv",
+    "steam.com",
+    "roblox.com",
+    "minecraft.net",
+
+    // Siti di trading e finanza
+    "tradingview.com",
+    "binance.com",
+    "coinbase.com",
+    "kraken.com",
+
+    // IDE online e coding platforms
+    "replit.com",
+    "stackblitz.com",
+    "gitpod.io",
+    "vs.dev"
 ];
 
-// OTTIMIZZAZIONE 2: Cache per evitare reiniezioni multiple
+// Cache ottimizzata con cleanup automatico
 const injectionCache = new Map();
 const lastInjectionTime = new Map();
-const MIN_INJECTION_INTERVAL = 5000; // 5 secondi
+const MIN_INJECTION_INTERVAL = 3000; // Ridotto a 3 secondi
 
-// OTTIMIZZAZIONE 3: Throttling per limitare operazioni simultanee
+// Throttling migliorato
 let isReinjectingEverywhere = false;
 const activeInjections = new Set();
-const MAX_CONCURRENT_INJECTIONS = 5;
+const MAX_CONCURRENT_INJECTIONS = 3; // Ridotto per prestazioni
 
-// OTTIMIZZAZIONE 4: Funzione per controllare se un URL deve essere escluso
-function shouldExcludeUrl(url) {
+// FUNZIONE PRINCIPALE: Controllo blacklist completa
+function isCompletelyBlocked(url) {
     if (!url || typeof url !== "string") return true;
 
     const lowercaseUrl = url.toLowerCase();
 
-    return EXCLUDED_SITES.some((site) => {
+    return COMPLETELY_BLOCKED_SITES.some((site) => {
         if (site.endsWith("/")) {
             return lowercaseUrl.startsWith(site);
+        }
+        if (site.includes(".")) {
+            return lowercaseUrl.includes(site);
         }
         return lowercaseUrl.includes(site);
     });
 }
 
-// OTTIMIZZAZIONE 5: Funzione di injection migliorata con error handling
+// Injection ottimizzata con controllo blacklist
 async function injectPrevue(tabId, includingCss = false) {
-    // Controllo se abbiamo già fatto injection recentemente
     const lastTime = lastInjectionTime.get(tabId);
     const now = Date.now();
 
@@ -104,7 +142,6 @@ async function injectPrevue(tabId, includingCss = false) {
         return false;
     }
 
-    // Controllo se c'è già un'injection in corso
     if (activeInjections.has(tabId)) {
         console.log(`Skipping injection for tab ${tabId} - already in progress`);
         return false;
@@ -114,13 +151,20 @@ async function injectPrevue(tabId, includingCss = false) {
         activeInjections.add(tabId);
         lastInjectionTime.set(tabId, now);
 
-        // Verifica che la tab esista ancora
+        // Verifica esistenza tab
         const tab = await chrome.tabs.get(tabId).catch(() => null);
-        if (!tab || shouldExcludeUrl(tab.url)) {
+        if (!tab) {
+            console.log(`Tab ${tabId} no longer exists`);
             return false;
         }
 
-        // Inietta CSS prima se richiesto
+        // CONTROLLO BLACKLIST COMPLETA
+        if (isCompletelyBlocked(tab.url)) {
+            console.log(`Tab ${tabId} is completely blocked: ${tab.url}`);
+            return false;
+        }
+
+        // Inietta CSS se richiesto
         if (includingCss && chrome.manifest.content_scripts[0].css) {
             await chrome.scripting
                 .insertCSS({
@@ -139,7 +183,7 @@ async function injectPrevue(tabId, includingCss = false) {
         });
 
         injectionCache.set(tabId, { time: now, success: true });
-        console.log(`Successfully injected Prevue into tab ${tabId}`);
+        console.log(`Successfully injected Prevue into tab ${tabId}: ${tab.url}`);
         return true;
     } catch (error) {
         console.log(`Injection failed for tab ${tabId}:`, error.message);
@@ -150,7 +194,7 @@ async function injectPrevue(tabId, includingCss = false) {
     }
 }
 
-// OTTIMIZZAZIONE 6: Funzione di reiniezione ottimizzata
+// Reiniezione ottimizzata con filtro blacklist
 async function reinjectPrevueEverywhere(includingCss = false) {
     if (isReinjectingEverywhere) {
         console.log("Reinjetion already in progress, skipping...");
@@ -158,29 +202,29 @@ async function reinjectPrevueEverywhere(includingCss = false) {
     }
 
     isReinjectingEverywhere = true;
-    console.log("Starting reinjetion everywhere...");
+    console.log("Starting reinjetion everywhere with blacklist filter...");
 
     try {
         const windows = await chrome.windows.getAll({ populate: true });
         const validTabs = [];
 
-        // Filtra le tab valide
+        // Filtra tab valide con controllo blacklist
         for (const win of windows) {
             for (const tab of win.tabs) {
                 if (
                     tab.status === "complete" &&
                     tab.url?.length &&
                     /^(https?|file|[a-z]+-extension):/i.test(tab.url) &&
-                    !shouldExcludeUrl(tab.url)
+                    !isCompletelyBlocked(tab.url) // FILTRO BLACKLIST
                 ) {
                     validTabs.push(tab.id);
                 }
             }
         }
 
-        console.log(`Found ${validTabs.length} valid tabs for injection`);
+        console.log(`Found ${validTabs.length} valid tabs for injection (blacklist filtered)`);
 
-        // Inietta in batch per evitare sovraccarico
+        // Injection in batch ridotti
         const batchSize = MAX_CONCURRENT_INJECTIONS;
         for (let i = 0; i < validTabs.length; i += batchSize) {
             const batch = validTabs.slice(i, i + batchSize);
@@ -193,9 +237,9 @@ async function reinjectPrevueEverywhere(includingCss = false) {
 
             await Promise.allSettled(promises);
 
-            // Pausa tra batch per non sovraccaricare il sistema
+            // Pausa più lunga tra batch
             if (i + batchSize < validTabs.length) {
-                await new Promise((resolve) => setTimeout(resolve, 100));
+                await new Promise((resolve) => setTimeout(resolve, 200));
             }
         }
     } catch (error) {
@@ -206,9 +250,12 @@ async function reinjectPrevueEverywhere(includingCss = false) {
     }
 }
 
-// OTTIMIZZAZIONE 7: Gestione messaggi migliorata con rate limiting
+// Rate limiting più aggressivo
 const messageRateLimiter = new Map();
-const MESSAGE_RATE_LIMIT = 100; // max 100ms tra messaggi dello stesso tipo
+const MESSAGE_RATE_LIMIT = 200; // Aumentato a 200ms
+
+// Tracciamento regole di blocco navigazione per tab (tabId → { ruleId, timeoutId })
+const navigationBlockRules = new Map();
 
 chrome.runtime.onMessage.addListener((req, sender, respond) => {
     const tabId = sender.tab?.id;
@@ -216,7 +263,7 @@ chrome.runtime.onMessage.addListener((req, sender, respond) => {
     const now = Date.now();
     const lastTime = messageRateLimiter.get(messageKey);
 
-    // Rate limiting per alcuni tipi di messaggi
+    // Rate limiting per messaggi frequenti
     if (["reportingIframeUrl", "pressedEscape"].includes(req.action)) {
         if (lastTime && now - lastTime < MESSAGE_RATE_LIMIT) {
             respond({ error: "Rate limited" });
@@ -225,57 +272,73 @@ chrome.runtime.onMessage.addListener((req, sender, respond) => {
         messageRateLimiter.set(messageKey, now);
     }
 
+    // Controllo blacklist per tab corrente
+    if (tabId) {
+        chrome.tabs.get(tabId).then(tab => {
+            if (isCompletelyBlocked(tab?.url)) {
+                console.log(`Message blocked for blacklisted site: ${tab.url}`);
+                respond({ error: "Site blacklisted" });
+                return;
+            }
+        }).catch(() => { });
+    }
+
     if (req.action === "rememberUrl") {
-        // Valida URL prima di aggiungerlo alla cronologia
-        if (req.url && typeof req.url === "string" && !shouldExcludeUrl(req.url)) {
+        if (req.url && typeof req.url === "string" && !isCompletelyBlocked(req.url)) {
             chrome.history.addUrl({ url: req.url }).catch((err) => {
                 console.log("Failed to add URL to history:", err.message);
             });
         }
     } else if (req.action === "setupImprobableApology") {
+        // Rete di sicurezza: blocca main_frame nav per ~30s.
+        // La protezione primaria è il sandbox sull'iframe in prevue.js.
+        const existing = navigationBlockRules.get(tabId);
+        if (existing) {
+            clearTimeout(existing.timeoutId);
+            chrome.declarativeNetRequest
+                .updateSessionRules({ removeRuleIds: [existing.ruleId] })
+                .catch(() => {});
+        }
+
+        const ruleId = Math.ceil(Math.random() * 1e8);
+
         chrome.declarativeNetRequest
             .updateSessionRules({
-                addRules: [
-                    {
-                        id: Math.ceil(Math.random() * 1e8),
-                        action: {
-                            type: "redirect",
-                            redirect: { url: sender.tab.url + "#prevue:sorry" },
-                        },
-                        condition: {
-                            urlFilter: "*",
-                            tabIds: [tabId],
-                            resourceTypes: ["main_frame"],
-                        },
+                addRules: [{
+                    id: ruleId,
+                    action: { type: "block" },
+                    condition: {
+                        urlFilter: "*",
+                        tabIds: [tabId],
+                        resourceTypes: ["main_frame"],
                     },
-                ],
+                }],
             })
             .catch((err) => {
                 console.log("Failed to setup redirect rule:", err.message);
             });
 
-        // Cleanup con timeout più breve per evitare accumulo di regole
-        setTimeout(() => {
+        const timeoutId = setTimeout(() => {
             chrome.declarativeNetRequest
-                .getSessionRules()
-                .then((rules) => {
-                    const ruleIds = rules.map((r) => r.id);
-                    if (ruleIds.length > 0) {
-                        chrome.declarativeNetRequest
-                            .updateSessionRules({
-                                removeRuleIds: ruleIds,
-                            })
-                            .catch((err) => {
-                                console.log("Failed to cleanup redirect rules:", err.message);
-                            });
-                    }
-                })
+                .updateSessionRules({ removeRuleIds: [ruleId] })
+                .catch(() => {});
+            navigationBlockRules.delete(tabId);
+        }, 30000);
+
+        navigationBlockRules.set(tabId, { ruleId, timeoutId });
+
+    } else if (req.action === "teardownNavigationBlock") {
+        const block = navigationBlockRules.get(tabId);
+        if (block) {
+            clearTimeout(block.timeoutId);
+            chrome.declarativeNetRequest
+                .updateSessionRules({ removeRuleIds: [block.ruleId] })
                 .catch((err) => {
-                    console.log("Failed to get session rules:", err.message);
+                    console.log("Failed to remove redirect rule:", err.message);
                 });
-        }, 2000); // Ridotto da 3 secondi a 2
+            navigationBlockRules.delete(tabId);
+        }
     } else if (req.action === "reinjectPrevueEverywhere") {
-        // Esegui in modo asincrono per non bloccare
         reinjectPrevueEverywhere().catch((err) => {
             console.log("Reinjetion everywhere failed:", err.message);
         });
@@ -290,7 +353,7 @@ chrome.runtime.onMessage.addListener((req, sender, respond) => {
         req.url &&
         /^(https?|file|[a-z]+-extension):/i.test(req.url)
     ) {
-        if (tabId && !shouldExcludeUrl(req.url)) {
+        if (tabId && !isCompletelyBlocked(req.url)) {
             chrome.tabs.sendMessage(tabId, req).catch((err) => {
                 console.log("Failed to send iframe URL message:", err.message);
             });
@@ -325,12 +388,11 @@ chrome.runtime.onMessage.addListener((req, sender, respond) => {
     return true;
 });
 
-// OTTIMIZZAZIONE 8: Gestione installazione migliorata
+// Gestione installazione
 chrome.runtime.onInstalled.addListener(async function (details) {
     console.log("Extension installed/updated:", details.reason);
 
     if (details.reason === "install") {
-        // Apri pagina opzioni solo per installazioni nuove
         await chrome.tabs
             .create({
                 url: chrome.runtime.getURL("/options.html"),
@@ -344,36 +406,34 @@ chrome.runtime.onInstalled.addListener(async function (details) {
         );
     }
 
-    // Reiniezione con gestione errori migliorata
+    // Reiniezione con delay più lungo
     setTimeout(() => {
         reinjectPrevueEverywhere(true).catch((err) => {
             console.log("Initial reinjetion failed:", err.message);
         });
-    }, 1000); // Ritardo per permettere al sistema di stabilizzarsi
+    }, 2000); // Aumentato a 2 secondi
 
     return true;
 });
 
-// OTTIMIZZAZIONE 9: Cleanup periodico per liberare memoria
+// Cleanup periodico più aggressivo
 setInterval(() => {
     const now = Date.now();
-    const maxAge = 10 * 60 * 1000; // 10 minuti
+    const maxAge = 5 * 60 * 1000; // Ridotto a 5 minuti
 
-    // Pulisci cache delle injection vecchie
+    // Cleanup cache
     for (const [tabId, data] of injectionCache) {
         if (now - data.time > maxAge) {
             injectionCache.delete(tabId);
         }
     }
 
-    // Pulisci tempi delle injection vecchie
     for (const [tabId, time] of lastInjectionTime) {
         if (now - time > maxAge) {
             lastInjectionTime.delete(tabId);
         }
     }
 
-    // Pulisci rate limiter per messaggi vecchi
     for (const [key, time] of messageRateLimiter) {
         if (now - time > maxAge) {
             messageRateLimiter.delete(key);
@@ -383,9 +443,9 @@ setInterval(() => {
     console.log(
         `Cleanup completed. Cache sizes: injection=${injectionCache.size}, timing=${lastInjectionTime.size}, rateLimiter=${messageRateLimiter.size}`
     );
-}, 5 * 60 * 1000); // Ogni 5 minuti
+}, 3 * 60 * 1000); // Ogni 3 minuti
 
-// OTTIMIZZAZIONE 10: Gestione errori globale
+// Error handling globale
 self.addEventListener("error", (event) => {
     console.error("Global error in background script:", event.error);
 });
@@ -398,116 +458,4 @@ self.addEventListener("unhandledrejection", (event) => {
     event.preventDefault();
 });
 
-console.log("Prevue background script loaded with optimizations");
-// chrome.manifest = chrome.runtime.getManifest()
-
-// console.clear()
-// console.log(`Loaded Prevue v${chrome.manifest.version} at ${new Date()}`)
-
-// function injectPrevue (tabId, includingCss = false) {
-//     chrome.scripting.executeScript({
-//         target: { tabId, allFrames: false },
-//         files: chrome.manifest.content_scripts[0].js,
-//     })
-
-//     includingCss && chrome.scripting.insertCSS({
-//         target: { tabId, allFrames: false },
-//         files: chrome.manifest.content_scripts[0].css,
-//     })
-// }
-
-// function reinjectPrevueEverywhere (includingCss = false) {
-//     chrome.windows.getAll({ populate: true }, windows => {
-//         windows.map(win => {
-//             win.tabs.map(tab => {
-//                 if (tab.status === 'complete'
-//                     && ! tab.active
-//                     && tab.url?.length
-//                     && /^(https?|file|[a-z]+-extension):/i.test(tab.url)
-//                     && ! /^https?:\/\/chrome\.google\.com\//.test(tab.url)) {
-//                     // console.log(tab.id, tab.url)
-//                     injectPrevue(tab.id, includingCss)
-//                 } else {
-//                     // console.log(tab)
-//                 }
-//             })
-//         })
-//     })
-// }
-
-// chrome.runtime.onMessage.addListener((req, sender, respond) => {
-//     const tabId = sender.tab?.id
-
-//     if (req.action === 'rememberUrl') {
-//         chrome.history.addUrl({ url: req.url })
-//     }
-
-//     else if (req.action === 'setupImprobableApology') {
-//         chrome.declarativeNetRequest.updateSessionRules({
-//             addRules: [{
-//                 id: Math.ceil(Math.random() * 1e8),
-//                 action: {
-//                     type: 'redirect',
-//                     redirect: { url: sender.tab.url + '#prevue:sorry' }
-//                 },
-//                 condition: {
-//                     urlFilter: '*',
-//                     tabIds: [tabId],
-//                     resourceTypes: ['main_frame'],
-//                 },
-//             }],
-//         })
-
-//         setTimeout(() => {
-//             chrome.declarativeNetRequest.getSessionRules(rules => {
-//                 chrome.declarativeNetRequest.updateSessionRules({
-//                     removeRuleIds: rules.map(r => r.id),
-//                 })
-//             })
-//         }, 3e3)
-//     }
-
-//     else if (req.action === 'reinjectPrevueEverywhere') {
-//         reinjectPrevueEverywhere()
-//     }
-
-//     else if (req.action === 'reinjectPrevueHere') {
-//         injectPrevue(tabId)
-//     }
-
-//     else if (req.action === 'reportingIframeUrl' && /^(https?|file|[a-z]+-extension):/i.test(req.url)) {
-//         chrome.tabs.sendMessage(tabId, req)
-//     }
-
-//     else if (req.action === 'pressedEscape') {
-//         chrome.tabs.sendMessage(tabId, { action: 'pressedEscape' })
-//     }
-
-//     else if (req.action === 'disableCsp') {
-//         chrome.declarativeNetRequest.updateEnabledRulesets({
-//             enableRulesetIds: ['disable-csp']
-//         })
-//     }
-
-//     else if (req.action === 'enableCsp') {
-//         chrome.declarativeNetRequest.updateEnabledRulesets({
-//             disableRulesetIds: ['disable-csp']
-//         })
-//     }
-
-//     respond({})
-
-//     return true
-// })
-
-// chrome.runtime.onInstalled.addListener(function (details) {
-//     if (details.reason === 'install') {
-//         chrome.tabs.create({ url: chrome.runtime.getURL('/options.html') })
-//     } else if (details.reason === 'update') {
-//         //
-//     }
-
-//     reinjectPrevueEverywhere(true)
-
-//     return true
-// })
+console.log("Prevue background script loaded with complete blacklist protection");
