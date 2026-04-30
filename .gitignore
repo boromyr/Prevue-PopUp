@@ -1,2 +1,5 @@
 /_metadata
 .history/*
+.history
+.history/*.*
+
