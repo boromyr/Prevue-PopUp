@@ -431,8 +431,8 @@
         }
 
         prebuildHtml(defaultWidth) {
-            // Remove everything first
-            document.querySelectorAll('[id=prevue--wrapper]')?.forEach(wrapper => wrapper.remove())
+            // Rimuove eventuale wrapper precedente (in caso di reinjection)
+            document.getElementById('prevue--wrapper')?.remove()
 
             this.el.sidePreview = document.createElement('div')
             this.el.sidePreview.id = 'prevue--wrapper'

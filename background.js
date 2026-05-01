@@ -254,8 +254,6 @@ async function reinjectPrevueEverywhere(includingCss = false) {
 const messageRateLimiter = new Map();
 const MESSAGE_RATE_LIMIT = 200; // Aumentato a 200ms
 
-// Tracciamento regole di blocco navigazione per tab (tabId → { ruleId, timeoutId })
-const navigationBlockRules = new Map();
 
 chrome.runtime.onMessage.addListener((req, sender, respond) => {
     const tabId = sender.tab?.id;
@@ -272,72 +270,16 @@ chrome.runtime.onMessage.addListener((req, sender, respond) => {
         messageRateLimiter.set(messageKey, now);
     }
 
-    // Controllo blacklist per tab corrente
-    if (tabId) {
-        chrome.tabs.get(tabId).then(tab => {
-            if (isCompletelyBlocked(tab?.url)) {
-                console.log(`Message blocked for blacklisted site: ${tab.url}`);
-                respond({ error: "Site blacklisted" });
-                return;
-            }
-        }).catch(() => { });
-    }
-
     if (req.action === "rememberUrl") {
         if (req.url && typeof req.url === "string" && !isCompletelyBlocked(req.url)) {
             chrome.history.addUrl({ url: req.url }).catch((err) => {
                 console.log("Failed to add URL to history:", err.message);
             });
         }
-    } else if (req.action === "setupImprobableApology") {
-        // Rete di sicurezza: blocca main_frame nav per ~30s.
-        // La protezione primaria è il sandbox sull'iframe in prevue.js.
-        const existing = navigationBlockRules.get(tabId);
-        if (existing) {
-            clearTimeout(existing.timeoutId);
-            chrome.declarativeNetRequest
-                .updateSessionRules({ removeRuleIds: [existing.ruleId] })
-                .catch(() => {});
-        }
+    } else if (req.action === "setupImprobableApology" || req.action === "teardownNavigationBlock") {
+        // No-op: la protezione contro frame-busting è il sandbox sull'iframe (prevue.js).
+        // Manteniamo l'handler perché prevue.js si aspetta una callback per aprire l'iframe.
 
-        const ruleId = Math.ceil(Math.random() * 1e8);
-
-        chrome.declarativeNetRequest
-            .updateSessionRules({
-                addRules: [{
-                    id: ruleId,
-                    action: { type: "block" },
-                    condition: {
-                        urlFilter: "*",
-                        tabIds: [tabId],
-                        resourceTypes: ["main_frame"],
-                    },
-                }],
-            })
-            .catch((err) => {
-                console.log("Failed to setup redirect rule:", err.message);
-            });
-
-        const timeoutId = setTimeout(() => {
-            chrome.declarativeNetRequest
-                .updateSessionRules({ removeRuleIds: [ruleId] })
-                .catch(() => {});
-            navigationBlockRules.delete(tabId);
-        }, 30000);
-
-        navigationBlockRules.set(tabId, { ruleId, timeoutId });
-
-    } else if (req.action === "teardownNavigationBlock") {
-        const block = navigationBlockRules.get(tabId);
-        if (block) {
-            clearTimeout(block.timeoutId);
-            chrome.declarativeNetRequest
-                .updateSessionRules({ removeRuleIds: [block.ruleId] })
-                .catch((err) => {
-                    console.log("Failed to remove redirect rule:", err.message);
-                });
-            navigationBlockRules.delete(tabId);
-        }
     } else if (req.action === "reinjectPrevueEverywhere") {
         reinjectPrevueEverywhere().catch((err) => {
             console.log("Reinjetion everywhere failed:", err.message);
@@ -368,17 +310,13 @@ chrome.runtime.onMessage.addListener((req, sender, respond) => {
         }
     } else if (req.action === "disableCsp") {
         chrome.declarativeNetRequest
-            .updateEnabledRulesets({
-                enableRulesetIds: ["disable-csp"],
-            })
+            .updateEnabledRulesets({ enableRulesetIds: ["disable-csp"] })
             .catch((err) => {
                 console.log("Failed to disable CSP:", err.message);
             });
     } else if (req.action === "enableCsp") {
         chrome.declarativeNetRequest
-            .updateEnabledRulesets({
-                disableRulesetIds: ["disable-csp"],
-            })
+            .updateEnabledRulesets({ disableRulesetIds: ["disable-csp"] })
             .catch((err) => {
                 console.log("Failed to enable CSP:", err.message);
             });
@@ -414,6 +352,13 @@ chrome.runtime.onInstalled.addListener(async function (details) {
     }, 2000); // Aumentato a 2 secondi
 
     return true;
+});
+
+// Cleanup cache quando un tab viene chiuso
+chrome.tabs.onRemoved.addListener((tabId) => {
+    injectionCache.delete(tabId);
+    lastInjectionTime.delete(tabId);
+    activeInjections.delete(tabId);
 });
 
 // Cleanup periodico più aggressivo
