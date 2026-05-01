@@ -260,17 +260,19 @@
                 }
             })
 
-            // TRIGGER PERSONALIZZATI OTTIMIZZATI
+            // TRIGGER PERSONALIZZATI: Alt+ArrowUp sul link sotto il mouse
+            // keydown su window (non document.body) per intercettare ovunque sia il focus
             if (!window.location.href.includes("web.whatsapp.com")) {
-                this.listenTo("mouseover", (e) => {
-                    document.addEventListener("mouseover", (i) => {
-                        document.addEventListener("keydown", (e) => {
-                            if ("ArrowUp" === e.key && !e.altKey && e.ctrlKey && e.shiftKey && !e.metaKey) {
-                                this.searchLinkAndTriggerPopup(i, true, false)
-                            }
-                        });
-                    });
-                });
+                this._lastHoverEvent = null;
+                this.listen([document], 'mouseover', (e) => {
+                    this._lastHoverEvent = e;
+                }, { passive: true, capture: true });
+                this.listen([window], 'keydown', (e) => {
+                    if (e.key === "ArrowUp" && e.altKey && !e.ctrlKey && !e.shiftKey && !e.metaKey
+                        && this._lastHoverEvent) {
+                        this.searchLinkAndTriggerPopup(this._lastHoverEvent, true, false);
+                    }
+                }, { capture: true });
             }
 
             // TRIGGER GOOGLE SEARCH OTTIMIZZATO
@@ -470,11 +472,6 @@
 
             this.el.sidePreviewIframe = document.createElement('iframe')
             this.el.sidePreviewIframe.className = 'prevue--iframe'
-            // Sandbox: blocca frame-busting (es. Cloudflare/StackExchange che fanno window.top.location = url)
-            // Senza allow-top-navigation* il browser rifiuta nativamente la navigazione del tab.
-            // I flag si propagano all'iframe annidato dentro prevue.html.
-            this.el.sidePreviewIframe.setAttribute('sandbox',
-                'allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals allow-downloads allow-pointer-lock allow-presentation')
             this.el.sidePreview.appendChild(this.el.sidePreviewIframe)
 
             this.el.sidePreviewImageWrapper = document.createElement('div')
@@ -584,6 +581,16 @@
             this.el.sidePreview.classList.add('prevue--visible')
 
             this.setTitle()
+
+            // Sandbox solo per pagine web (blocca frame-busting tipo Cloudflare).
+            // Niente sandbox per PDF: il viewer interno di Edge viene bloccato dal sandbox.
+            const isPdf = /\.pdf(\?[^#]*)?(#.*)?$/i.test(this.url)
+            if (isPdf) {
+                this.el.sidePreviewIframe.removeAttribute('sandbox')
+            } else {
+                this.el.sidePreviewIframe.setAttribute('sandbox',
+                    'allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals allow-downloads allow-pointer-lock allow-presentation')
+            }
 
             this.bg('disableCsp', () => {
                 this.el.sidePreviewIframe.src = `${this.iframeBaseUrl}?${btoa(this.url)}`
