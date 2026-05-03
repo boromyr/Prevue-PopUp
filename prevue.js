@@ -582,9 +582,12 @@
 
             this.setTitle()
 
-            // Sandbox solo per pagine web (blocca frame-busting tipo Cloudflare).
+            // Sandbox solo per pagine web (blocca frame-busting tipo Cloudflare/StackExchange).
             // Niente sandbox per PDF: il viewer interno di Edge viene bloccato dal sandbox.
+            // Pattern aggiuntivi per URL che NON finiscono in .pdf ma fanno SEMPRE redirect a un PDF
+            // (TI literature: /lit/<docid>, /lit/gpn/<partnumber>, /lit/ds/..., /lit/an/..., ecc.).
             const isPdf = /\.pdf(\?[^#]*)?(#.*)?$/i.test(this.url)
+                || /^https?:\/\/(www\.)?ti\.com\/lit\//i.test(this.url)
             if (isPdf) {
                 this.el.sidePreviewIframe.removeAttribute('sandbox')
             } else {
