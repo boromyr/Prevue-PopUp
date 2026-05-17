@@ -168,7 +168,7 @@
             const popup = this.el.sidePreview;
             const isGoogle = window.location.href.includes("google.com/search");
 
-            if (isGoogle) popup.style.width = '610px';
+            if (isGoogle) popup.style.width = '640px';
 
             let hoverCount = 0;
             let savedWidth = null;
