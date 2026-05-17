@@ -137,7 +137,7 @@
                 // OTTIMIZZAZIONE AVANZATA: Performance automatica per siti pesanti
                 const performanceOptimizationSites = [
                     'twitter.com',
-                    'youtube.com',
+                    // 'youtube.com',
                     'instagram.com',
                     'reddit.com',
                     'linkedin.com',
@@ -472,6 +472,7 @@
 
             this.el.sidePreviewIframe = document.createElement('iframe')
             this.el.sidePreviewIframe.className = 'prevue--iframe'
+            this.el.sidePreviewIframe.allow = 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen; web-share'
             this.el.sidePreview.appendChild(this.el.sidePreviewIframe)
 
             this.el.sidePreviewImageWrapper = document.createElement('div')
@@ -583,12 +584,19 @@
             this.setTitle()
 
             // Sandbox solo per pagine web (blocca frame-busting tipo Cloudflare/StackExchange).
-            // Niente sandbox per PDF: il viewer interno di Edge viene bloccato dal sandbox.
-            // Pattern aggiuntivi per URL che NON finiscono in .pdf ma fanno SEMPRE redirect a un PDF
-            // (TI literature: /lit/<docid>, /lit/gpn/<partnumber>, /lit/ds/..., /lit/an/..., ecc.).
-            const isPdf = /\.pdf(\?[^#]*)?(#.*)?$/i.test(this.url)
+            // Skip sandbox per:
+            //   - PDF (.pdf): il viewer interno di Edge viene bloccato dal sandbox
+            //   - TI literature (ti.com/lit/...): redirect a PDF
+            //   - YouTube: EME (DRM) non funziona in sandbox → schermata nera; inoltre
+            //     la pagina watch va caricata senza sandbox per usare correttamente le
+            //     Permission Policy. Il frame-busting di YouTube è gestito su due livelli:
+            //       (1) youtube-fix.js (content_script MAIN world) blocca i self-reload
+            //       (2) setupImprobableApology (background.js) blocca top-navigation
+            const skipSandbox = /\.pdf(\?[^#]*)?(#.*)?$/i.test(this.url)
                 || /^https?:\/\/(www\.)?ti\.com\/lit\//i.test(this.url)
-            if (isPdf) {
+                || /^https?:\/\/(?:www\.|m\.)?youtube\.com\//i.test(this.url)
+                || /^https?:\/\/youtu\.be\//i.test(this.url)
+            if (skipSandbox) {
                 this.el.sidePreviewIframe.removeAttribute('sandbox')
             } else {
                 this.el.sidePreviewIframe.setAttribute('sandbox',

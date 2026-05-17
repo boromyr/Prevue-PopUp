@@ -276,10 +276,64 @@ chrome.runtime.onMessage.addListener((req, sender, respond) => {
                 console.log("Failed to add URL to history:", err.message);
             });
         }
-    } else if (req.action === "setupImprobableApology" || req.action === "teardownNavigationBlock") {
-        // No-op: la protezione contro frame-busting è il sandbox sull'iframe (prevue.js).
-        // Manteniamo l'handler perché prevue.js si aspetta una callback per aprire l'iframe.
-
+    } else if (req.action === "setupImprobableApology") {
+        // Protezione contro frame-busting via top-navigation.
+        // Per la maggior parte dei siti il sandbox sull'iframe basta (vedi prevue.js),
+        // ma alcuni casi (YouTube, dove il sandbox è disattivato per far funzionare EME)
+        // hanno bisogno di protezione a livello rete: registriamo una regola di
+        // sessione che redireziona QUALSIASI navigazione main_frame del tab corrente
+        // a sé stesso con #prevue:sorry, neutralizzando i tentativi di top.location = url.
+        // CRITICO: respond() solo dopo updateSessionRules.then(), altrimenti prevue.js
+        // apre l'iframe prima che la regola sia attiva e il framebust passa.
+        if (!tabId) {
+            respond({ success: true });
+            return true;
+        }
+        const ruleId = (tabId % 100000) * 100 + Math.floor(Math.random() * 100);
+        chrome.declarativeNetRequest
+            .updateSessionRules({
+                addRules: [{
+                    id: ruleId,
+                    priority: 1,
+                    action: {
+                        type: "redirect",
+                        redirect: { url: (sender.tab?.url || "about:blank") + "#prevue:sorry" },
+                    },
+                    condition: {
+                        urlFilter: "*",
+                        tabIds: [tabId],
+                        resourceTypes: ["main_frame"],
+                    },
+                }],
+            })
+            .then(() => respond({ success: true, ruleId }))
+            .catch((err) => {
+                console.log("setupImprobableApology failed:", err.message);
+                respond({ success: true });
+            });
+        // Auto-cleanup di sicurezza: la regola viene rimossa dopo 10s anche se
+        // teardownNavigationBlock non viene mai chiamato.
+        setTimeout(() => {
+            chrome.declarativeNetRequest
+                .updateSessionRules({ removeRuleIds: [ruleId] })
+                .catch(() => { });
+        }, 10000);
+        return true;
+    } else if (req.action === "teardownNavigationBlock") {
+        // Cleanup esplicito alla chiusura preview: rimuove tutte le regole di sessione
+        // del tab corrente.
+        if (tabId) {
+            chrome.declarativeNetRequest.getSessionRules().then((rules) => {
+                const idsToRemove = rules
+                    .filter((r) => r.condition?.tabIds?.includes(tabId))
+                    .map((r) => r.id);
+                if (idsToRemove.length) {
+                    chrome.declarativeNetRequest
+                        .updateSessionRules({ removeRuleIds: idsToRemove })
+                        .catch(() => { });
+                }
+            }).catch(() => { });
+        }
     } else if (req.action === "reinjectPrevueEverywhere") {
         reinjectPrevueEverywhere().catch((err) => {
             console.log("Reinjetion everywhere failed:", err.message);
@@ -309,11 +363,15 @@ chrome.runtime.onMessage.addListener((req, sender, respond) => {
                 });
         }
     } else if (req.action === "disableCsp") {
+        // Risponde solo dopo che la regola è effettivamente attiva (fix race condition)
         chrome.declarativeNetRequest
             .updateEnabledRulesets({ enableRulesetIds: ["disable-csp"] })
+            .then(() => respond({ success: true }))
             .catch((err) => {
                 console.log("Failed to disable CSP:", err.message);
+                respond({ success: true });
             });
+        return true;
     } else if (req.action === "enableCsp") {
         chrome.declarativeNetRequest
             .updateEnabledRulesets({ disableRulesetIds: ["disable-csp"] })
