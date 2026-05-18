@@ -136,10 +136,17 @@
         let lastGestureTime = 0;
         let gestureUsedAt = 0;
 
+        // Tracking del gesto utente con DEBOUNCE: un singolo click fisico
+        // genera pointerdown→mousedown→click (3 eventi in <50ms). Senza
+        // debounce, lastGestureTime viene aggiornato 3 volte, permettendo
+        // a consumeGesture di tornare true 3 volte → l'anti-iframe pause
+        // viene classificato erroneamente come user-initiated. Con debounce
+        // di 150ms, solo il primo evento del cluster conta.
         const trackGesture = (e) => {
-            if (e && e.isTrusted) {
-                lastGestureTime = Date.now();
-            }
+            if (!e || !e.isTrusted) return;
+            const now = Date.now();
+            if (now - lastGestureTime < 150) return; // stesso cluster, ignora
+            lastGestureTime = now;
         };
         ['pointerdown', 'mousedown', 'click', 'keydown', 'touchstart'].forEach((type) => {
             try {
@@ -147,10 +154,20 @@
             } catch (err) { }
         });
 
-        // Consuma il gesto SOLO se non è un no-op (pause su video pausato
-        // o play su video playing non consuma → evita race con anti-iframe).
+        // Consuma il gesto SOLO se:
+        //  - non è un no-op (evita race con anti-iframe su stato già giusto)
+        //  - userActivation è effettivamente attiva (API browser, ignora
+        //    completamente eventi sintetici/non-isTrusted)
+        //  - non l'abbiamo già consumato per questo stesso gesto
         const consumeGesture = (isNoOp) => {
             if (isNoOp) return false;
+            // Doppia verifica via API browser: se non c'è user activation
+            // attiva, NON è un gesto utente, punto.
+            try {
+                if (navigator.userActivation && !navigator.userActivation.isActive) {
+                    return false;
+                }
+            } catch (e) { /* fallback al timestamp */ }
             const sinceGesture = Date.now() - lastGestureTime;
             if (sinceGesture < 500 && gestureUsedAt < lastGestureTime) {
                 gestureUsedAt = lastGestureTime;
@@ -291,70 +308,61 @@
 
     // ============================================================
     // (7) Cinema/Theater mode automatico
-    //     Strategia multi-tentativo: click sul bottone + fallback
-    //     keypress 't' + ascolto evento yt-navigate-finish (SPA).
+    //     Un solo click alla volta (cooldown 1500ms) per evitare
+    //     il toggle on/off/on che causa l'attivazione casuale e
+    //     la latenza visiva sul pulsante play/pause.
     // ============================================================
-    const attemptTheater = (label) => {
+    let theaterDone = false;
+    let lastTheaterClick = 0;
+    const THEATER_COOLDOWN = 1500; // ms minimi tra un click e il successivo
+
+    const attemptTheater = () => {
+        if (theaterDone) return;
+
         const watchEl = document.querySelector('ytd-watch-flexy');
         const btn = document.querySelector('.ytp-size-button');
-        const btnTitle = btn ? (btn.getAttribute('title') || btn.getAttribute('aria-label') || '') : '';
-        const btnTitleLow = btnTitle.toLowerCase();
 
-        console.log('[Prevue/YT] Theater attempt [' + label + ']'
-            + ' watchEl=' + (watchEl ? 'yes' : 'no')
-            + ' theater-attr=' + (watchEl ? watchEl.hasAttribute('theater') : 'n/a')
-            + ' btn=' + (btn ? '"' + btnTitle + '"' : 'no'));
-
-        // Già attiva → non fare niente
+        // Già attiva → segnalo e smetto
         if (watchEl && watchEl.hasAttribute('theater')) {
-            console.log('[Prevue/YT] Theater già attiva, stop.');
-            return 'already-active';
+            console.log('[Prevue/YT] Theater attiva.');
+            theaterDone = true;
+            return;
         }
 
-        // Prova il click sul bottone se esiste
-        if (btn) {
-            // Il title "Default view" o "Predefinita" indica già in theater mode
-            if (btnTitleLow.includes('default') || btnTitleLow.includes('predefinita') || btnTitleLow.includes('normal')) {
-                console.log('[Prevue/YT] Theater già attiva (da btn title)');
-                return 'already-active';
-            }
-            console.log('[Prevue/YT] Click su .ytp-size-button');
-            btn.click();
-            return 'clicked-btn';
+        // Player non pronto → riprovo al prossimo tick
+        if (!watchEl || !btn) return;
+
+        // Cooldown: non cliccare se abbiamo già cliccato di recente
+        // (previene il toggle on→off→on per click multipli ravvicinati)
+        const now = Date.now();
+        if (now - lastTheaterClick < THEATER_COOLDOWN) return;
+
+        // Bottone con title "predefinita/default/normal" → già in theater mode
+        const label = (btn.getAttribute('title') || btn.getAttribute('aria-label') || '').toLowerCase();
+        if (label.includes('default') || label.includes('predefinita') || label.includes('normal')) {
+            console.log('[Prevue/YT] Theater attiva (da btn title).');
+            theaterDone = true;
+            return;
         }
 
-        // Fallback: simula keypress 't' sul player o sul document
-        const player = document.querySelector('#movie_player') || document.querySelector('.html5-video-player');
-        const target = player || document.body;
-        console.log('[Prevue/YT] Fallback keypress T su', target.id || target.className || target.tagName);
-        ['keydown', 'keypress', 'keyup'].forEach((type) => {
-            target.dispatchEvent(new KeyboardEvent(type, {
-                key: 't', code: 'KeyT', keyCode: 84, charCode: 116,
-                bubbles: true, cancelable: true, composed: true
-            }));
-        });
-        return 'keypress-t';
+        console.log('[Prevue/YT] Click theater button:', btn.getAttribute('title'));
+        lastTheaterClick = now;
+        btn.click();
     };
 
-    // Sequenza di tentativi a ritardo crescente dopo DOMContentLoaded
-    const scheduleTheaterAttempts = (baseDelay) => {
-        const delays = [0, 500, 1200, 2500, 4000];
-        delays.forEach((d) => {
-            setTimeout(() => attemptTheater(baseDelay + d + 'ms'), baseDelay + d);
-        });
-    };
+    // Polling leggero: controlla ogni 300ms fino a conferma o timeout 20s
+    const theaterInterval = setInterval(() => {
+        attemptTheater();
+        if (theaterDone) clearInterval(theaterInterval);
+    }, 300);
+    setTimeout(() => clearInterval(theaterInterval), 20000);
 
-    // Alla navigazione SPA di YouTube (es. click su video correlato)
+    // Alla navigazione SPA (es. click su video correlato) riparte
     document.addEventListener('yt-navigate-finish', () => {
-        console.log('[Prevue/YT] yt-navigate-finish ricevuto');
-        scheduleTheaterAttempts(300);
+        theaterDone = false;
+        lastTheaterClick = 0;
+        console.log('[Prevue/YT] yt-navigate-finish: theater reset');
     });
-
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', () => scheduleTheaterAttempts(200));
-    } else {
-        scheduleTheaterAttempts(200);
-    }
 
     console.log('[Prevue/YT] All patches active');
 })();

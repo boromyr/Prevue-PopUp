@@ -145,7 +145,7 @@
                     'pinterest.com',
                     'gmail.com',
                     'outlook.com',
-                    'lcsc.com',
+                    // 'lcsc.com',
 
                 ];
 
