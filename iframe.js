@@ -3,4 +3,11 @@ const finalUrl = url.match(/\.pdf(\?[^#]*)?$/i)
     ? url.replace(/#.*$/, '') + '#view=FitH'
     : url
 
-document.querySelector('iframe').src = finalUrl
+const innerFrame = document.querySelector('iframe')
+innerFrame.src = finalUrl
+
+window.addEventListener('message', (e) => {
+    if (e.data?.action === 'prevueScroll') {
+        innerFrame.contentWindow?.postMessage(e.data, '*')
+    }
+}, { passive: true })

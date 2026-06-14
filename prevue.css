@@ -244,6 +244,54 @@
   height: 14px;
 }
 
+.prevue--scroll-buttons {
+  position: absolute;
+  bottom: 16px;
+  right: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 2s;
+  pointer-events: none;
+  z-index: 1;
+}
+
+#prevue--wrapper:hover .prevue--scroll-buttons {
+  opacity: 1;
+  transition: opacity .2s;
+  pointer-events: auto;
+}
+
+#prevue--wrapper.prevue--minimized .prevue--scroll-buttons {
+  display: none;
+}
+
+.prevue--scroll-btn {
+  background-color: #fff;
+  color: #444;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 5px;
+  box-shadow: 0 10px 40px 20px rgba(0, 0, 0, .15), 0 5px 10px 0 rgba(0, 0, 0, .2), 0 2px 4px 0 rgba(0, 0, 0, .1), 0 1px 2px 0 rgba(0, 0, 0, .1);
+  opacity: .85;
+  transition: all .2s;
+  cursor: pointer;
+}
+
+.prevue--scroll-btn:hover {
+  opacity: 1;
+  color: #000;
+}
+
+.prevue--scroll-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
 @media (prefers-color-scheme: dark) {
   #prevue--wrapper {
     background-color: #35363a;
@@ -273,6 +321,16 @@
   }
 
   .prevue--actions div:hover {
+    background-color: #000;
+    color: #fff;
+  }
+
+  .prevue--scroll-btn {
+    background-color: #202124;
+    color: #ccc;
+  }
+
+  .prevue--scroll-btn:hover {
     background-color: #000;
     color: #fff;
   }

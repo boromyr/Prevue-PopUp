@@ -172,19 +172,77 @@
 
             let hoverCount = 0;
             let savedWidth = null;
+            let leaveTimer = null;
+            const pendingMovers = new Map(); // target → mousemove watcher
 
-            const onEnter = () => {
+            const cancelPendingMover = (target) => {
+                const m = pendingMovers.get(target);
+                if (m) {
+                    document.removeEventListener('mousemove', m, true);
+                    pendingMovers.delete(target);
+                }
+            };
+
+            const performLeave = () => {
+                if (leaveTimer) { clearTimeout(leaveTimer); leaveTimer = null; }
+                hoverCount = Math.max(0, hoverCount - 1);
+                if (hoverCount === 0 && savedWidth !== null) {
+                    leaveTimer = setTimeout(() => {
+                        popup.style.width = savedWidth;
+                        savedWidth = null;
+                        leaveTimer = null;
+                    }, 120);
+                }
+            };
+
+            const onEnter = (e) => {
+                const target = e && e.currentTarget;
+                // Se stiamo annullando un mover pendente, è un RIENTRO dopo
+                // un falso-leave (scrollbar/iframe): hoverCount non era stato
+                // decrementato, quindi NON va re-incrementato — altrimenti il
+                // contatore si sballa e il popup resta bloccato espanso.
+                const wasPending = target ? pendingMovers.has(target) : false;
+                if (target) cancelPendingMover(target);
+                if (leaveTimer) { clearTimeout(leaveTimer); leaveTimer = null; }
+                if (wasPending) return;
                 if (hoverCount === 0) savedWidth = popup.style.width;
                 hoverCount++;
                 popup.style.width = '1100px';
             };
 
-            const onLeave = () => {
-                hoverCount = Math.max(0, hoverCount - 1);
-                if (hoverCount === 0 && savedWidth !== null) {
-                    popup.style.width = savedWidth;
-                    savedWidth = null;
+            // Soglia per considerare "ancora dentro" il popup anche se le
+            // coordinate sono leggermente fuori dal rect (es. scrollbar
+            // della pagina padre, tipicamente 15-17px di larghezza).
+            const HOVER_PAD = 24;
+            const stillInArea = (ev, target) => {
+                const r = target.getBoundingClientRect();
+                return ev.clientX >= r.left - HOVER_PAD && ev.clientX <= r.right + HOVER_PAD &&
+                       ev.clientY >= r.top - HOVER_PAD && ev.clientY <= r.bottom + HOVER_PAD;
+            };
+
+            const onLeave = (e) => {
+                const target = e && e.currentTarget;
+                // Falso leave: il browser emette mouseleave anche quando il
+                // mouse entra sulla scrollbar della pagina padre (adiacente
+                // al rect del popup). Se le coordinate sono dentro o entro
+                // HOVER_PAD dal rect, installiamo un mousemove watcher che
+                // attende l'uscita vera dall'area allargata.
+                if (target && e && typeof e.clientX === 'number') {
+                    if (stillInArea(e, target)) {
+                        if (pendingMovers.has(target)) return; // già installato
+                        const mover = (ev) => {
+                            if (!stillInArea(ev, target)) {
+                                cancelPendingMover(target);
+                                performLeave();
+                            }
+                        };
+                        pendingMovers.set(target, mover);
+                        document.addEventListener('mousemove', mover, { capture: true, passive: true });
+                        return;
+                    }
                 }
+                if (target) cancelPendingMover(target);
+                performLeave();
             };
 
             const attach = (el) => {
@@ -341,6 +399,17 @@
                     widthUnit: '%'
                 })
             })
+
+            // CHIUSURA AL BORDO SINISTRO: quando il mouse tocca il bordo
+            // sinistro della pagina (clientX === 0), chiudi l'anteprima come
+            // un click outside. Ignora durante resize/minimized.
+            this.listen([window, document.body], 'mousemove', (e) => {
+                if (e.clientX > 0) return
+                if (this.resizing) return
+                if (!this.isOpen()) return
+                if (this.isMinimized()) return
+                this.close()
+            }, { passive: true })
         }
 
         closeAllPreviews() {
@@ -540,6 +609,27 @@
             this.el.sidePreviewActions.appendChild(action)
 
             this.el.sidePreview.appendChild(this.el.sidePreviewActions)
+
+            // Scroll buttons (bottom-right, visible on hover)
+            this.el.scrollButtons = document.createElement('div')
+            this.el.scrollButtons.className = 'prevue--scroll-buttons'
+
+            const scrollTopBtn = document.createElement('div')
+            scrollTopBtn.className = 'prevue--scroll-btn'
+            scrollTopBtn.innerHTML = this.scrollTopIconSvg()
+            scrollTopBtn.title = 'Scroll to top'
+            scrollTopBtn.onclick = () => this.scrollPreviewTo('top')
+            this.el.scrollButtons.appendChild(scrollTopBtn)
+
+            const scrollBottomBtn = document.createElement('div')
+            scrollBottomBtn.className = 'prevue--scroll-btn'
+            scrollBottomBtn.innerHTML = this.scrollBottomIconSvg()
+            scrollBottomBtn.title = 'Scroll to bottom'
+            scrollBottomBtn.onclick = () => this.scrollPreviewTo('bottom')
+            this.el.scrollButtons.appendChild(scrollBottomBtn)
+
+            this.el.sidePreview.appendChild(this.el.scrollButtons)
+
             document.body.appendChild(this.el.sidePreview)
         }
 
@@ -743,6 +833,18 @@
             return `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" /></svg>`;
         }
 
+        scrollTopIconSvg() {
+            return `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M5 10l7-7m0 0l7 7m-7-7v18" /></svg>`
+        }
+
+        scrollBottomIconSvg() {
+            return `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 14l-7 7m0 0l-7-7m7 7V3" /></svg>`
+        }
+
+        scrollPreviewTo(direction) {
+            this.el.sidePreviewIframe.contentWindow?.postMessage({ action: 'prevueScroll', direction }, '*')
+        }
+
         cogIconSvg() {
             return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clip-rule="evenodd" /></svg>`
         }
@@ -774,6 +876,15 @@
 
                 this.restyleEmbeddedSitesScrollbars()
                 this.passthroughEscapeKeyPressEvent()
+
+                window.addEventListener('message', (e) => {
+                    if (e.data?.action !== 'prevueScroll') return
+                    if (e.data.direction === 'top') {
+                        window.scrollTo({ top: 0, behavior: 'smooth' })
+                    } else {
+                        window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' })
+                    }
+                }, { passive: true })
             }
         }
 
