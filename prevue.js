@@ -87,15 +87,11 @@
 
         const lowercaseUrl = url.toLowerCase();
 
-        return COMPLETELY_BLOCKED_SITES.some((site) => {
-            if (site.endsWith("/")) {
-                return lowercaseUrl.startsWith(site);
-            }
-            if (site.includes(".")) {
-                return lowercaseUrl.includes(site);
-            }
-            return lowercaseUrl.includes(site);
-        });
+        return COMPLETELY_BLOCKED_SITES.some((site) =>
+            site.endsWith("/")
+                ? lowercaseUrl.startsWith(site)
+                : lowercaseUrl.includes(site)
+        );
     }
 
     // CONTROLLO IMMEDIATO - TERMINAZIONE PRECOCE
@@ -114,7 +110,6 @@
             this.resizing = false
             this.iframeBaseUrl = chrome.runtime.getURL('/prevue.html')
             this._lastPanningTime = 0
-            this._lastEventTime = {}
         }
 
         init() {
@@ -133,30 +128,6 @@
 
                 this.prebuildHtml((options.width || 50) + (options.widthUnit === 'px' ? 'px' : 'vw'))
                 this.setupTriggers()
-
-                // OTTIMIZZAZIONE AVANZATA: Performance automatica per siti pesanti
-                const performanceOptimizationSites = [
-                    'twitter.com',
-                    // 'youtube.com',
-                    'instagram.com',
-                    'reddit.com',
-                    'linkedin.com',
-                    'amazon.com',
-                    'pinterest.com',
-                    'gmail.com',
-                    'outlook.com',
-                    // 'lcsc.com',
-
-                ];
-
-                const needsOptimization = performanceOptimizationSites.some(site =>
-                    window.location.href.includes(site)
-                );
-
-                if (needsOptimization) {
-                    console.log('Prevue: Performance optimization enabled for heavy site');
-                    this.enablePerformanceMode();
-                }
 
                 // Gestione hover popup tramite JS - mouseenter/mouseleave non bubblano (fix flicker Google)
                 // Eseguito dentro retrieveOptions così this.el.sidePreview esiste già
@@ -217,7 +188,7 @@
             const stillInArea = (ev, target) => {
                 const r = target.getBoundingClientRect();
                 return ev.clientX >= r.left - HOVER_PAD && ev.clientX <= r.right + HOVER_PAD &&
-                       ev.clientY >= r.top - HOVER_PAD && ev.clientY <= r.bottom + HOVER_PAD;
+                    ev.clientY >= r.top - HOVER_PAD && ev.clientY <= r.bottom + HOVER_PAD;
             };
 
             const onLeave = (e) => {
@@ -270,33 +241,6 @@
             }
         }
 
-        // MODALITÀ PERFORMANCE PER SITI PESANTI
-        enablePerformanceMode() {
-            // Disabilita animazioni
-            this.el.sidePreview.style.transition = 'none';
-
-            // Throttling aggressivo per eventi ad alta frequenza
-            const originalListen = this.listen.bind(this);
-            this.listen = (els, event, handler) => {
-                if (['mousemove', 'mouseover', 'scroll'].includes(event)) {
-                    const throttledHandler = (e) => {
-                        const now = Date.now();
-                        if (!this._lastEventTime[event]) this._lastEventTime[event] = 0;
-
-                        if (now - this._lastEventTime[event] < 200) return; // 200ms throttling
-                        this._lastEventTime[event] = now;
-
-                        handler(e);
-                    };
-                    originalListen(els, event, throttledHandler);
-                } else {
-                    originalListen(els, event, handler);
-                }
-            };
-        }
-
-
-
         setupTriggers() {
             Object.keys(this.options.triggers).map(t => {
                 const trigger = this.options.triggers[t]
@@ -311,7 +255,7 @@
                         this.listenTo('dragend', e => {
                             if (this.dragDelta >= this.options.triggerOpenDelay &&
                                 this.dragDelta <= this.options.triggerReleaseDelay) {
-                                this.searchLinkAndTriggerPopup(e, true, true)
+                                this.searchLinkAndTriggerPopup(e, true)
                             }
                         })
                         break
@@ -328,7 +272,7 @@
                 this.listen([window], 'keydown', (e) => {
                     if (e.key === "ArrowUp" && e.altKey && !e.ctrlKey && !e.shiftKey && !e.metaKey
                         && this._lastHoverEvent) {
-                        this.searchLinkAndTriggerPopup(this._lastHoverEvent, true, false);
+                        this.searchLinkAndTriggerPopup(this._lastHoverEvent, true);
                     }
                 }, { capture: true });
             }
@@ -349,7 +293,7 @@
                             targetElement.classList.contains("MBeuO") ||
                             targetElement.classList.contains("immersive-translate-target-inner")
                         ) {
-                            this.searchLinkAndTriggerPopup(e, true, false);
+                            this.searchLinkAndTriggerPopup(e, true);
                         }
                     }, 1000); // Ridotto il delay da 1300ms a 1000ms
                 });
@@ -455,7 +399,7 @@
             this.el.sidePreview.classList.toggle('prevue--minimized')
         }
 
-        searchLinkAndTriggerPopup(e, isDragging = false, recordEvent = false) {
+        searchLinkAndTriggerPopup(e, isDragging = false) {
             if (this.resizing) return
 
             if (!this.specialKeyPressed(e) && !isDragging) return
@@ -492,7 +436,11 @@
                     || (this.options.targetLinkTypes === 'internal' && this.isInternal())) {
 
                     this.url = url
-                    recordEvent && (this.event = e)
+                    // Registra sempre l'evento scatenante: shouldOpenOnTheRight()
+                    // lo usa per decidere il lato in modalità 'auto'. Prima veniva
+                    // salvato solo per il drag, così i trigger da tastiera/hover
+                    // trovavano this.event undefined e crashavano all'apertura.
+                    this.event = e
 
                     this.updatePreview(type)
                 }
@@ -705,8 +653,10 @@
                 return false
             }
 
+            // 'auto': apri dal lato opposto al cursore. Guardia difensiva su
+            // this.event per non crashare se manca (fallback: lato sinistro).
             return this.options.openPosition === 'right'
-                || this.event.clientX <= window.innerWidth / 2
+                || this.event?.clientX <= window.innerWidth / 2
         }
 
         visualUrl(append = '') {
@@ -849,17 +799,6 @@
             return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clip-rule="evenodd" /></svg>`
         }
 
-        ts(append = '') {
-            if (this.prevTs) {
-                console.log(new Date().getTime() - this.prevTs + 'ms', append)
-            } else {
-                console.log('-------------- started debugging --------------')
-                console.log(append)
-            }
-
-            this.prevTs = new Date().getTime()
-        }
-
         isFramed() {
             try {
                 return window.self !== window.top
@@ -869,13 +808,12 @@
         }
 
         initInsideIframe() {
-            const isInsideExtensionsIframe = location.ancestorOrigins[0].startsWith('chrome-extension://')
+            const isInsideExtensionsIframe = !!location.ancestorOrigins?.[0]?.startsWith('chrome-extension://')
 
             if (isInsideExtensionsIframe) {
                 this.bg({ action: 'reportingIframeUrl', url: location.href })
 
                 this.maybeShowFramingErrorFallback()
-                this.restyleEmbeddedSitesScrollbars()
                 this.passthroughEscapeKeyPressEvent()
 
                 window.addEventListener('message', (e) => {
@@ -971,10 +909,6 @@
             document.addEventListener('keyup', e => {
                 e.key === 'Escape' && this.bg({ action: 'pressedEscape' })
             }, { passive: true })
-        }
-
-        restyleEmbeddedSitesScrollbars() {
-            // Scrollbar styling commentato per performance
         }
 
         listenForBackgroundMessages() {

@@ -87,7 +87,6 @@ const COMPLETELY_BLOCKED_SITES = [
     "meet.google.com",
 
     // Gaming e piattaforme interactive
-    "twitch.tv",
     "steam.com",
     "roblox.com",
     "minecraft.net",
@@ -149,7 +148,6 @@ function allowThirdPartyCookiesForEmbeddedSites() {
 allowThirdPartyCookiesForEmbeddedSites();
 
 // Cache ottimizzata con cleanup automatico
-const injectionCache = new Map();
 const lastInjectionTime = new Map();
 const MIN_INJECTION_INTERVAL = 3000; // Ridotto a 3 secondi
 
@@ -164,15 +162,11 @@ function isCompletelyBlocked(url) {
 
     const lowercaseUrl = url.toLowerCase();
 
-    return COMPLETELY_BLOCKED_SITES.some((site) => {
-        if (site.endsWith("/")) {
-            return lowercaseUrl.startsWith(site);
-        }
-        if (site.includes(".")) {
-            return lowercaseUrl.includes(site);
-        }
-        return lowercaseUrl.includes(site);
-    });
+    return COMPLETELY_BLOCKED_SITES.some((site) =>
+        site.endsWith("/")
+            ? lowercaseUrl.startsWith(site)
+            : lowercaseUrl.includes(site)
+    );
 }
 
 // Injection ottimizzata con controllo blacklist
@@ -225,12 +219,10 @@ async function injectPrevue(tabId, includingCss = false) {
             files: chrome.manifest.content_scripts[0].js,
         });
 
-        injectionCache.set(tabId, { time: now, success: true });
         console.log(`Successfully injected Prevue into tab ${tabId}: ${tab.url}`);
         return true;
     } catch (error) {
         console.log(`Injection failed for tab ${tabId}:`, error.message);
-        injectionCache.set(tabId, { time: now, success: false });
         return false;
     } finally {
         activeInjections.delete(tabId);
@@ -460,7 +452,6 @@ chrome.runtime.onInstalled.addListener(async function (details) {
 
 // Cleanup cache quando un tab viene chiuso
 chrome.tabs.onRemoved.addListener((tabId) => {
-    injectionCache.delete(tabId);
     lastInjectionTime.delete(tabId);
     activeInjections.delete(tabId);
 });
@@ -469,13 +460,6 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 setInterval(() => {
     const now = Date.now();
     const maxAge = 5 * 60 * 1000; // Ridotto a 5 minuti
-
-    // Cleanup cache
-    for (const [tabId, data] of injectionCache) {
-        if (now - data.time > maxAge) {
-            injectionCache.delete(tabId);
-        }
-    }
 
     for (const [tabId, time] of lastInjectionTime) {
         if (now - time > maxAge) {
@@ -490,7 +474,7 @@ setInterval(() => {
     }
 
     console.log(
-        `Cleanup completed. Cache sizes: injection=${injectionCache.size}, timing=${lastInjectionTime.size}, rateLimiter=${messageRateLimiter.size}`
+        `Cleanup completed. Cache sizes: timing=${lastInjectionTime.size}, rateLimiter=${messageRateLimiter.size}`
     );
 }, 3 * 60 * 1000); // Ogni 3 minuti
 

@@ -32,7 +32,7 @@ chrome.storage.sync.get(null).then(res => {
         if (select.name.startsWith('triggers[')) {
             options.triggers[select.dataset.index][select.dataset.prop] = select.value
         } else {
-            options.triggers[select.name] = select.value
+            options[select.name] = select.value
         }
 
         chrome.storage.sync.set(options)
@@ -48,46 +48,6 @@ chrome.storage.sync.get(null).then(res => {
 
     updateInputValues()
 })
-
-// const currentSettings = {}
-//
-// document.querySelectorAll('[name]').forEach(input => {
-//     if (input.tagName === 'META') return
-//
-//     chrome.storage.sync.get([input.name], result => {
-//         let target = input.type === 'checkbox' ? 'checked' : 'value'
-//
-//         if (result[input.name] === undefined) {
-//             chrome.storage.sync.set({ [input.name]: defs[input.name] })
-//
-//             input[target] = defs[input.name]
-//             currentSettings[input.name] = defs[input.name]
-//         } else {
-//             input[target] = result[input.name]
-//             currentSettings[input.name] = result[input.name]
-//         }
-//     })
-// })
-//
-// setTimeout(() => {
-//     document.querySelectorAll('[name]').forEach(input => {
-//         if (input.tagName === 'META') return
-//
-//         const event = input.type === 'checkbox' ? 'click' : 'change'
-//
-//         input.addEventListener(event, e => {
-//             const value = input.type === 'checkbox' ? e.target.checked : e.target.value
-//
-//             chrome.storage.sync.set({ [input.name]: value }, () => {
-//                 chrome.runtime.sendMessage({ action: 'reinjectPrevueEverywhere' })
-//             })
-//         })
-//     })
-//
-//     currentSettings.ua = navigator.userAgent
-//
-//     document.querySelector('#contact-link').href += '?prevue=' + btoa(JSON.stringify(currentSettings))
-// }, 1e3)
 
 const title = document.querySelector('h1')
 
