@@ -874,6 +874,7 @@
             if (isInsideExtensionsIframe) {
                 this.bg({ action: 'reportingIframeUrl', url: location.href })
 
+                this.maybeShowFramingErrorFallback()
                 this.restyleEmbeddedSitesScrollbars()
                 this.passthroughEscapeKeyPressEvent()
 
@@ -886,6 +887,84 @@
                     }
                 }, { passive: true })
             }
+        }
+
+        // FALLBACK ANTI-EMBEDDING: alcuni siti (es. AliExpress con il token
+        // MTOP _m_h5_tk) non riescono a caricarsi dentro l'iframe cross-origin
+        // e mostrano una pagina d'errore invece del contenuto. Non possiamo
+        // recuperare quella pagina, ma possiamo rilevarla e offrire un'uscita
+        // pulita: un overlay con "Apri in una nuova scheda" (dove il sito è
+        // in contesto di prima parte e funziona normalmente).
+        maybeShowFramingErrorFallback() {
+            // Marcatori specifici per evitare falsi positivi su pagine valide.
+            const ERROR_MARKERS = [
+                'FAIL_SYS_TOKEN_EMPTY',
+                '令牌为空',
+            ]
+
+            const originalUrl = location.href
+
+            const pageHasError = () => {
+                const text = (document.title || '') + ' ' + (document.body?.innerText || '')
+                return ERROR_MARKERS.some(m => text.includes(m))
+            }
+
+            const buildOverlay = () => {
+                if (document.getElementById('prevue--fallback-overlay')) return
+
+                const overlay = document.createElement('div')
+                overlay.id = 'prevue--fallback-overlay'
+                overlay.style.cssText = [
+                    'position:fixed', 'inset:0', 'z-index:2147483647',
+                    'display:flex', 'flex-direction:column',
+                    'align-items:center', 'justify-content:center',
+                    'gap:16px', 'padding:24px', 'box-sizing:border-box',
+                    'text-align:center', 'background:#1e1e1e', 'color:#f5f5f5',
+                    'font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif'
+                ].join(';')
+
+                const title = document.createElement('div')
+                title.textContent = 'Impossibile mostrare questa pagina nell’anteprima'
+                title.style.cssText = 'font-size:16px;font-weight:600;max-width:440px;line-height:1.4'
+
+                const sub = document.createElement('div')
+                sub.textContent = 'Il sito blocca il caricamento dentro un frame.'
+                sub.style.cssText = 'font-size:13px;opacity:.7;max-width:440px;line-height:1.5'
+
+                const btn = document.createElement('a')
+                btn.textContent = 'Apri in una nuova scheda'
+                btn.href = originalUrl
+                btn.target = '_blank'
+                btn.rel = 'noopener noreferrer'
+                btn.style.cssText = [
+                    'display:inline-block', 'margin-top:4px', 'padding:10px 20px',
+                    'border-radius:8px', 'background:#e62e04', 'color:#fff',
+                    'text-decoration:none', 'font-size:14px', 'font-weight:600',
+                    'cursor:pointer'
+                ].join(';')
+
+                overlay.appendChild(title)
+                overlay.appendChild(sub)
+                overlay.appendChild(btn)
+                    ; (document.body || document.documentElement).appendChild(overlay)
+            }
+
+            const check = () => {
+                if (pageHasError()) {
+                    buildOverlay()
+                    return true
+                }
+                return false
+            }
+
+            // Controllo immediato + retry: l'errore token può comparire in modo
+            // asincrono dopo il fallimento dell'handshake (~6s di finestra).
+            if (check()) return
+
+            let attempts = 0
+            const interval = setInterval(() => {
+                if (check() || ++attempts >= 12) clearInterval(interval)
+            }, 500)
         }
 
         passthroughEscapeKeyPressEvent() {

@@ -105,6 +105,49 @@ const COMPLETELY_BLOCKED_SITES = [
     "vs.dev"
 ];
 
+// SITI CHE RICHIEDONO COOKIE DI TERZE PARTI DENTRO L'IFRAME DI ANTEPRIMA
+// AliExpress usa un token anti-bot MTOP (_m_h5_tk) che vive in un cookie.
+// Dentro l'anteprima la pagina è in un contesto cross-origin (top-level =
+// chrome-extension://), quindi i suoi cookie sono di terze parti e vengono
+// bloccati: l'handshake del token non si completa mai e la pagina mostra
+// "FAIL_SYS_TOKEN_EMPTY::令牌为空". Registriamo un'eccezione contentSettings
+// per consentire i cookie di terze parti di questi domini in QUALSIASI
+// contesto top-level (secondaryPattern di default = tutti gli URL).
+const THIRD_PARTY_COOKIE_ALLOW_PATTERNS = [
+    "https://*.aliexpress.com/*",
+    "https://*.aliexpress.us/*",
+    "https://*.alicdn.com/*",
+    "https://*.alibaba.com/*",
+];
+
+function allowThirdPartyCookiesForEmbeddedSites() {
+    if (!chrome.contentSettings || !chrome.contentSettings.cookies) {
+        console.log("contentSettings.cookies non disponibile: skip");
+        return;
+    }
+
+    THIRD_PARTY_COOKIE_ALLOW_PATTERNS.forEach((primaryPattern) => {
+        chrome.contentSettings.cookies
+            .set({
+                primaryPattern, // dominio che imposta il cookie
+                setting: "allow", // secondaryPattern (top-level) di default = tutti
+                scope: "regular",
+            })
+            .then(() => {
+                console.log(`Third-party cookies allowed for ${primaryPattern}`);
+            })
+            .catch((err) => {
+                console.log(
+                    `Failed to allow third-party cookies for ${primaryPattern}:`,
+                    err.message
+                );
+            });
+    });
+}
+
+// Applica l'eccezione all'avvio del service worker
+allowThirdPartyCookiesForEmbeddedSites();
+
 // Cache ottimizzata con cleanup automatico
 const injectionCache = new Map();
 const lastInjectionTime = new Map();
@@ -387,6 +430,9 @@ chrome.runtime.onMessage.addListener((req, sender, respond) => {
 // Gestione installazione
 chrome.runtime.onInstalled.addListener(async function (details) {
     console.log("Extension installed/updated:", details.reason);
+
+    // Riapplica l'eccezione cookie di terze parti (AliExpress ecc.)
+    allowThirdPartyCookiesForEmbeddedSites();
 
     if (details.reason === "install") {
         await chrome.tabs
