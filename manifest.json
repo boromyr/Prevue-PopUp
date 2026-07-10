@@ -68,7 +68,7 @@
     "rule_resources": [
       {
         "id": "disable-csp",
-        "enabled": false,
+        "enabled": true,
         "path": "rules.json"
       }
     ]

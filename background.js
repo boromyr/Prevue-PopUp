@@ -147,6 +147,66 @@ function allowThirdPartyCookiesForEmbeddedSites() {
 // Applica l'eccezione all'avvio del service worker
 allowThirdPartyCookiesForEmbeddedSites();
 
+// ============================================================================
+// RIMOZIONE HEADER ANTI-EMBEDDING — ruleset statico SEMPRE ATTIVO
+// ============================================================================
+// Il ruleset statico "disable-csp" (rules.json) rimuove X-Frame-Options /
+// Content-Security-Policy / COEP: senza, i siti mostrano "rifiutato la
+// connessione" dentro l'iframe dell'anteprima.
+//
+// Prima veniva acceso per-anteprima e spento dopo 8s: abilitare un ruleset
+// statico via updateEnabledRulesets NON è affidabile per la richiesta subito
+// successiva (race) → fallimenti intermittenti. Soluzione: lo attiviamo UNA
+// VOLTA all'avvio del service worker — molto prima di qualsiasi anteprima — e
+// non lo spegniamo più. Nessuna race possibile.
+async function ensureCspRulesetEnabled() {
+    if (!chrome.declarativeNetRequest || !chrome.declarativeNetRequest.updateEnabledRulesets) {
+        return;
+    }
+    try {
+        await chrome.declarativeNetRequest.updateEnabledRulesets({
+            enableRulesetIds: ["disable-csp"],
+        });
+        const enabled = await chrome.declarativeNetRequest.getEnabledRulesets();
+        console.log("[Prevue] Ruleset statici attivi:", enabled);
+    } catch (err) {
+        console.log("[Prevue] Attivazione ruleset 'disable-csp' fallita:", err.message);
+    }
+}
+
+// Pulizia stato residuo all'avvio:
+//  - regole DINAMICHE lasciate da versioni sperimentali precedenti;
+//  - regole di SESSIONE rimaste appese — in particolare il redirect
+//    #prevue:sorry (anti frame-busting) che poteva "colare" se il service
+//    worker MV3 veniva terminato prima del suo cleanup a 10s, redirezionando
+//    ogni navigazione della scheda e rendendola inutilizzabile.
+// Queste regole sono sempre transitorie: azzerarle all'avvio è sicuro (le
+// anteprime aperte le riregistrano al bisogno) e guarisce eventuali leak.
+async function cleanupStaleRules() {
+    if (!chrome.declarativeNetRequest) return;
+    try {
+        const dynamic = await chrome.declarativeNetRequest.getDynamicRules();
+        if (dynamic.length) {
+            await chrome.declarativeNetRequest.updateDynamicRules({
+                removeRuleIds: dynamic.map((r) => r.id),
+            });
+            console.log("[Prevue] Rimosse regole dinamiche residue:", dynamic.length);
+        }
+        const session = await chrome.declarativeNetRequest.getSessionRules();
+        if (session.length) {
+            await chrome.declarativeNetRequest.updateSessionRules({
+                removeRuleIds: session.map((r) => r.id),
+            });
+            console.log("[Prevue] Rimosse regole di sessione residue:", session.length);
+        }
+    } catch (err) {
+        console.log("[Prevue] Cleanup regole residue fallito:", err.message);
+    }
+}
+
+ensureCspRulesetEnabled();
+cleanupStaleRules();
+
 // Cache ottimizzata con cleanup automatico
 const lastInjectionTime = new Map();
 const MIN_INJECTION_INTERVAL = 3000; // Ridotto a 3 secondi
@@ -397,22 +457,6 @@ chrome.runtime.onMessage.addListener((req, sender, respond) => {
                     console.log("Failed to send escape message:", err.message);
                 });
         }
-    } else if (req.action === "disableCsp") {
-        // Risponde solo dopo che la regola è effettivamente attiva (fix race condition)
-        chrome.declarativeNetRequest
-            .updateEnabledRulesets({ enableRulesetIds: ["disable-csp"] })
-            .then(() => respond({ success: true }))
-            .catch((err) => {
-                console.log("Failed to disable CSP:", err.message);
-                respond({ success: true });
-            });
-        return true;
-    } else if (req.action === "enableCsp") {
-        chrome.declarativeNetRequest
-            .updateEnabledRulesets({ disableRulesetIds: ["disable-csp"] })
-            .catch((err) => {
-                console.log("Failed to enable CSP:", err.message);
-            });
     }
 
     respond({ success: true });
@@ -425,6 +469,10 @@ chrome.runtime.onInstalled.addListener(async function (details) {
 
     // Riapplica l'eccezione cookie di terze parti (AliExpress ecc.)
     allowThirdPartyCookiesForEmbeddedSites();
+
+    // Attiva il ruleset di rimozione header e ripulisce lo stato residuo
+    ensureCspRulesetEnabled();
+    cleanupStaleRules();
 
     if (details.reason === "install") {
         await chrome.tabs

@@ -613,8 +613,6 @@
         }
 
         openIframePopup() {
-            clearTimeout(this.enableCspTimeout)
-
             this.el.sidePreviewImageWrapper.style.display = 'none'
             this.el.sidePreviewIframe.style.display = 'block'
             this.el.sidePreview.classList.add('prevue--visible')
@@ -641,11 +639,10 @@
                     'allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals allow-downloads allow-pointer-lock allow-presentation')
             }
 
-            this.bg('disableCsp', () => {
-                this.el.sidePreviewIframe.src = `${this.iframeBaseUrl}?${btoa(this.url)}`
-
-                this.enableCspTimeout = setTimeout(() => this.bg('enableCsp'), 8e3) // Ridotto a 8 secondi
-            })
+            // Il ruleset che rimuove X-Frame-Options / CSP è SEMPRE attivo
+            // (abilitato all'avvio del service worker, vedi ensureCspRulesetEnabled
+            // in background.js). Nessun toggle per-anteprima → nessuna race.
+            this.el.sidePreviewIframe.src = `${this.iframeBaseUrl}?${btoa(this.url)}`
         }
 
         shouldOpenOnTheRight() {
