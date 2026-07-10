@@ -14,6 +14,18 @@
 (() => {
     if (window.self === window.top) return; // mai sul frame principale
 
+    // ESCLUSIONE ALIEXPRESS: prima dell'introduzione di questo fix AliExpress
+    // veniva mostrato correttamente nell'anteprima. Il meta darkreader-lock
+    // (o le mutazioni del DOM che comporta) interferisce con la pagina,
+    // quindi qui lo saltiamo del tutto e lasciamo il comportamento precedente.
+    const EXCLUDED_SITES = [
+        'aliexpress.com',
+        'aliexpress.us',
+        'alicdn.com',
+        'alibaba.com',
+    ];
+    if (EXCLUDED_SITES.some((site) => location.hostname.endsWith(site))) return;
+
     // Attivo SOLO dentro un iframe di QUESTA estensione (prevue.html), non
     // quando il sito è embeddato da altre estensioni.
     let inPrevue = false;
