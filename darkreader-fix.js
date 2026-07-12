@@ -1,30 +1,32 @@
-// Impedisce a DarkReader di scurire l'anteprima di Prevue.
+// Forza la modalità CHIARA di DarkReader per una lista esplicita di siti
+// dentro l'anteprima di Prevue.
 //
 // DarkReader decide per-SCHEDA in base all'URL della pagina in cima, poi
 // propaga quella decisione a tutti i frame: un'anteprima eredita quindi lo
 // stato DarkReader del sito padre e IGNORA la lista di esclusione del sito
 // effettivamente mostrato. Non possiamo leggere quella lista (è privata alla
-// sua estensione), ma possiamo usare il meccanismo ufficiale di opt-out di
-// DarkReader: il meta tag <meta name="darkreader-lock">. Iniettandolo nel
-// documento dentro l'anteprima, DarkReader salta quel frame e il sito viene
-// mostrato con il suo aspetto nativo.
+// sua estensione), quindi non possiamo sapere in automatico quali siti
+// l'utente ha escluso in DarkReader.
 //
+// Per questo usiamo una WHITELIST esplicita (FORCE_LIGHT_SITES) invece di
+// applicare il lock ovunque: un lock universale forzerebbe la modalità
+// chiara anche sui siti dove DarkReader dovrebbe applicarsi normalmente
+// (es. Wikipedia), rompendo il comportamento atteso nella maggioranza dei
+// casi. Aggiungi qui solo i domini per cui hai verificato il problema.
+const FORCE_LIGHT_SITES = [
+    '192.168.1.6',
+    'www.falstad.com',
+    'claude.ai',
+    'github.com'
+];
+
 // Gira a document_start su ogni frame per battere DarkReader ed evitare il
-// flash scuro→chiaro; esce subito se il frame non è dentro Prevue.
+// flash scuro→chiaro; esce subito se il frame non è dentro Prevue o non è
+// nella whitelist.
 (() => {
     if (window.self === window.top) return; // mai sul frame principale
 
-    // ESCLUSIONE ALIEXPRESS: prima dell'introduzione di questo fix AliExpress
-    // veniva mostrato correttamente nell'anteprima. Il meta darkreader-lock
-    // (o le mutazioni del DOM che comporta) interferisce con la pagina,
-    // quindi qui lo saltiamo del tutto e lasciamo il comportamento precedente.
-    const EXCLUDED_SITES = [
-        'aliexpress.com',
-        'aliexpress.us',
-        'alicdn.com',
-        'alibaba.com',
-    ];
-    if (EXCLUDED_SITES.some((site) => location.hostname.endsWith(site))) return;
+    if (!FORCE_LIGHT_SITES.some((site) => location.hostname.endsWith(site))) return;
 
     // Attivo SOLO dentro un iframe di QUESTA estensione (prevue.html), non
     // quando il sito è embeddato da altre estensioni.
