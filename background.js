@@ -1,6 +1,5 @@
 // Background script ottimizzato per Prevue v3 - Blacklist Completa
 chrome.manifest = chrome.runtime.getManifest();
-console.clear();
 console.log(`Loaded Prevue v${chrome.manifest.version} at ${new Date()}`);
 
 // BLACKLIST COMPLETA - Disabilitazione totale dell'estensione
@@ -174,6 +173,13 @@ async function ensureCspRulesetEnabled() {
     }
 }
 
+// Regole di sessione aggiunte in QUESTA vita del service worker: il cleanup
+// all'avvio non deve toccarle. Senza questo set c'è una race: se il worker si
+// risveglia proprio per un setupImprobableApology, cleanupStaleRules (asincrono)
+// può cancellare la regola appena aggiunta, disattivando la protezione
+// anti-frame-busting per quell'anteprima.
+const sessionRulesAddedThisLifetime = new Set();
+
 // Pulizia stato residuo all'avvio:
 //  - regole DINAMICHE lasciate da versioni sperimentali precedenti;
 //  - regole di SESSIONE rimaste appese — in particolare il redirect
@@ -193,11 +199,14 @@ async function cleanupStaleRules() {
             console.log("[Prevue] Rimosse regole dinamiche residue:", dynamic.length);
         }
         const session = await chrome.declarativeNetRequest.getSessionRules();
-        if (session.length) {
+        const staleIds = session
+            .map((r) => r.id)
+            .filter((id) => !sessionRulesAddedThisLifetime.has(id));
+        if (staleIds.length) {
             await chrome.declarativeNetRequest.updateSessionRules({
-                removeRuleIds: session.map((r) => r.id),
+                removeRuleIds: staleIds,
             });
-            console.log("[Prevue] Rimosse regole di sessione residue:", session.length);
+            console.log("[Prevue] Rimosse regole di sessione residue:", staleIds.length);
         }
     } catch (err) {
         console.log("[Prevue] Cleanup regole residue fallito:", err.message);
@@ -222,11 +231,27 @@ function isCompletelyBlocked(url) {
 
     const lowercaseUrl = url.toLowerCase();
 
-    return COMPLETELY_BLOCKED_SITES.some((site) =>
-        site.endsWith("/")
-            ? lowercaseUrl.startsWith(site)
-            : lowercaseUrl.includes(site)
-    );
+    let hostname;
+    try {
+        hostname = new URL(lowercaseUrl).hostname;
+    } catch (e) {
+        return true; // URL non parsabile: blocca per sicurezza
+    }
+
+    return COMPLETELY_BLOCKED_SITES.some((site) => {
+        // Pattern di protocollo ("chrome://", "about:"): confronto sul prefisso
+        if (site.includes("://") || site.endsWith(":")) {
+            return lowercaseUrl.startsWith(site);
+        }
+        // Pattern con percorso ("amazon.com/gp/video"): confronto sull'URL intero
+        if (site.includes("/")) {
+            return lowercaseUrl.includes(site);
+        }
+        // Pattern dominio/IP: confronto sul SOLO hostname. Prima si cercava
+        // nell'intero URL e pattern come "10.0." bloccavano per errore pagine
+        // con numeri di versione nel percorso (es. .../releases/tag/v10.0.1).
+        return hostname.includes(site);
+    });
 }
 
 // Injection ottimizzata con controllo blacklist
@@ -384,7 +409,12 @@ chrome.runtime.onMessage.addListener((req, sender, respond) => {
             respond({ success: true });
             return true;
         }
-        const ruleId = (tabId % 100000) * 100 + Math.floor(Math.random() * 100);
+        // +1 per garantire id >= 1 (DNR rifiuta l'id 0, possibile se
+        // tabId % 100000 === 0 e il random è 0)
+        const ruleId = (tabId % 100000) * 100 + Math.floor(Math.random() * 100) + 1;
+        // Registrata PRIMA della chiamata async: protegge dalla race con
+        // cleanupStaleRules all'avvio del service worker.
+        sessionRulesAddedThisLifetime.add(ruleId);
         chrome.declarativeNetRequest
             .updateSessionRules({
                 addRules: [{

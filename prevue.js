@@ -81,17 +81,33 @@
         "vs.dev"
     ];
 
-    // FUNZIONE DI CONTROLLO BLACKLIST
+    // FUNZIONE DI CONTROLLO BLACKLIST (stessa logica del background script)
     function isCompletelyBlocked(url) {
         if (!url || typeof url !== "string") return true;
 
         const lowercaseUrl = url.toLowerCase();
 
-        return COMPLETELY_BLOCKED_SITES.some((site) =>
-            site.endsWith("/")
-                ? lowercaseUrl.startsWith(site)
-                : lowercaseUrl.includes(site)
-        );
+        let hostname;
+        try {
+            hostname = new URL(lowercaseUrl).hostname;
+        } catch (e) {
+            return true; // URL non parsabile: blocca per sicurezza
+        }
+
+        return COMPLETELY_BLOCKED_SITES.some((site) => {
+            // Pattern di protocollo ("chrome://", "about:"): confronto sul prefisso
+            if (site.includes("://") || site.endsWith(":")) {
+                return lowercaseUrl.startsWith(site);
+            }
+            // Pattern con percorso ("amazon.com/gp/video"): confronto sull'URL intero
+            if (site.includes("/")) {
+                return lowercaseUrl.includes(site);
+            }
+            // Pattern dominio/IP: confronto sul SOLO hostname. Prima si cercava
+            // nell'intero URL e pattern come "10.0." bloccavano per errore pagine
+            // con numeri di versione nel percorso (es. .../releases/tag/v10.0.1).
+            return hostname.includes(site);
+        });
     }
 
     // CONTROLLO IMMEDIATO - TERMINAZIONE PRECOCE
@@ -122,7 +138,10 @@
             this.listenForBackgroundMessages()
 
             this.retrieveOptions(options => {
-                this.options = options
+                // Difesa: se lo storage è vuoto (prima esecuzione, sync non
+                // ancora popolato) options.triggers è undefined e setupTriggers
+                // crasherebbe, lasciando l'estensione inerte sulla pagina.
+                this.options = { target: 'both', triggers: [], ...options }
                 this.targetLinks = ['both', 'links'].includes(this.options.target)
                 this.targetImages = ['both', 'images'].includes(this.options.target)
 
@@ -249,6 +268,9 @@
                     case 'drag':
                         this.listenTo('dragstart', () => {
                             this.dragStart = new Date().getTime()
+                            // Reset: senza, un drag rapidissimo (nessun evento
+                            // 'drag' intermedio) riusa il delta del drag precedente
+                            this.dragDelta = 0
                             this.closeAllPreviews()
                         })
                         this.listenTo('drag', () => this.dragDelta = new Date().getTime() - this.dragStart)
@@ -583,6 +605,11 @@
 
         getImageZoomPerc() {
             const image = this.el.sidePreviewImage
+
+            // Immagine non (ancora) caricata: naturalWidth/Height = 0 e la
+            // divisione produrrebbe NaN nel titolo ("(NaN%)")
+            if (!image.naturalWidth || !image.naturalHeight) return 100
+
             const xPerc = image.clientWidth / image.naturalWidth * 100
             const yPerc = image.clientHeight / image.naturalHeight * 100
 

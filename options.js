@@ -25,14 +25,21 @@ chrome.storage.sync.get(null).then(res => {
     chrome.storage.sync.set(options)
 
     document.addEventListener('change', e => {
-        if (e.target.tagName !== 'SELECT') return
+        const el = e.target
 
-        const select = e.target
-
-        if (select.name.startsWith('triggers[')) {
-            options.triggers[select.dataset.index][select.dataset.prop] = select.value
+        if (el.tagName === 'SELECT') {
+            if (el.name.startsWith('triggers[')) {
+                options.triggers[el.dataset.index][el.dataset.prop] = el.value
+            } else {
+                options[el.name] = el.value
+            }
+        } else if (el.tagName === 'INPUT' && el.name) {
+            // Gli input numerici/testuali non emettono 'click' quando si
+            // digita: senza questo ramo un valore scritto a mano (es. width)
+            // non veniva mai salvato.
+            options[el.name] = el.type === 'checkbox' ? el.checked : el.value
         } else {
-            options[select.name] = select.value
+            return
         }
 
         chrome.storage.sync.set(options)

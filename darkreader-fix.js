@@ -26,7 +26,10 @@ const FORCE_LIGHT_SITES = [
 (() => {
     if (window.self === window.top) return; // mai sul frame principale
 
-    if (!FORCE_LIGHT_SITES.some((site) => location.hostname.endsWith(site))) return;
+    // Confronto con confine di dominio: "aliexpress.com" combacia con
+    // "aliexpress.com" e "it.aliexpress.com", NON con "notaliexpress.com".
+    const host = location.hostname;
+    if (!FORCE_LIGHT_SITES.some((site) => host === site || host.endsWith('.' + site))) return;
 
     // Attivo SOLO dentro un iframe di QUESTA estensione (prevue.html), non
     // quando il sito è embeddato da altre estensioni.
