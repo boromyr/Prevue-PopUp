@@ -119,6 +119,19 @@
     // SOLO SE IL SITO NON È BLACKLISTED, PROCEDI CON L'INIZIALIZZAZIONE
     console.log('Prevue: Site allowed, initializing extension for:', location.href);
 
+    // SMONTAGGIO DELL'ISTANZA PRECEDENTE
+    // Lo script può essere iniettato una seconda volta nella stessa pagina
+    // (chrome.scripting.executeScript da background.js: reinjectPrevueHere /
+    // reinjectPrevueEverywhere). Senza smontare l'istanza vecchia i suoi
+    // listener restano attivi e continuano a pilotare un wrapper che nel
+    // frattempo prebuildHtml() ha rimosso dal DOM: il trigger "parte" ma non
+    // si vede niente, e l'unico rimedio è ricaricare la pagina.
+    // AbortController permette di staccare in un colpo solo tutti i listener
+    // registrati dall'istanza precedente.
+    window.__prevueTeardown?.()
+    const prevueAbort = new AbortController()
+    window.__prevueTeardown = () => prevueAbort.abort()
+
     window.Prevue = class {
         constructor() {
             this.el = {}
@@ -145,7 +158,11 @@
                 this.targetLinks = ['both', 'links'].includes(this.options.target)
                 this.targetImages = ['both', 'images'].includes(this.options.target)
 
-                this.prebuildHtml((options.width || 50) + (options.widthUnit === 'px' ? 'px' : 'vw'))
+                // NB: si legge da this.options, non da options: se lo storage
+                // risponde con undefined (errore di sync) `options.width`
+                // lanciava un TypeError e setupTriggers() non veniva MAI
+                // eseguito → nessun trigger registrato sulla pagina.
+                this.prebuildHtml((this.options.width || 50) + (this.options.widthUnit === 'px' ? 'px' : 'vw'))
                 this.setupTriggers()
 
                 // Gestione hover popup tramite JS - mouseenter/mouseleave non bubblano (fix flicker Google)
@@ -227,7 +244,7 @@
                             }
                         };
                         pendingMovers.set(target, mover);
-                        document.addEventListener('mousemove', mover, { capture: true, passive: true });
+                        document.addEventListener('mousemove', mover, { capture: true, passive: true, signal: prevueAbort.signal });
                         return;
                     }
                 }
@@ -237,8 +254,8 @@
 
             const attach = (el) => {
                 if (!el) return;
-                el.addEventListener('mouseenter', onEnter);
-                el.addEventListener('mouseleave', onLeave);
+                el.addEventListener('mouseenter', onEnter, { signal: prevueAbort.signal });
+                el.addEventListener('mouseleave', onLeave, { signal: prevueAbort.signal });
             };
 
             attach(popup);
@@ -256,7 +273,11 @@
                 const observer = new MutationObserver(() => {
                     if (tryAttachExternal()) observer.disconnect();
                 });
-                observer.observe(document.body, { childList: true, subtree: true });
+                // Su documentElement, non su document.body: quest'ultimo viene
+                // rimpiazzato dalle navigazioni Turbo e l'observer smetterebbe
+                // di osservare qualsiasi cosa.
+                observer.observe(document.documentElement, { childList: true, subtree: true });
+                prevueAbort.signal.addEventListener('abort', () => observer.disconnect());
             }
         }
 
@@ -264,17 +285,30 @@
             Object.keys(this.options.triggers).map(t => {
                 const trigger = this.options.triggers[t]
 
+                // Un'entry malformata nello storage non deve far abortire tutto
+                // setupTriggers(): sotto c'è la registrazione di alt+↑, che
+                // altrimenti non verrebbe mai eseguita.
+                if (!trigger) return
+
                 switch (trigger.action) {
                     case 'drag':
                         this.listenTo('dragstart', () => {
                             this.dragStart = new Date().getTime()
-                            // Reset: senza, un drag rapidissimo (nessun evento
-                            // 'drag' intermedio) riusa il delta del drag precedente
+                            // Reset per non riusare il delta del drag precedente;
+                            // il valore definitivo lo ricalcola 'dragend'.
                             this.dragDelta = 0
                             this.closeAllPreviews()
                         })
                         this.listenTo('drag', () => this.dragDelta = new Date().getTime() - this.dragStart)
                         this.listenTo('dragend', e => {
+                            // Il delta va misurato QUI, non sull'ultimo evento
+                            // 'drag': un drag molto rapido non ne emette nessuno
+                            // e dragDelta resterebbe 0 — sotto triggerOpenDelay
+                            // (default 50ms) → anteprima mai aperta.
+                            if (this.dragStart) {
+                                this.dragDelta = new Date().getTime() - this.dragStart
+                            }
+
                             if (this.dragDelta >= this.options.triggerOpenDelay &&
                                 this.dragDelta <= this.options.triggerReleaseDelay) {
                                 this.searchLinkAndTriggerPopup(e, true)
@@ -332,7 +366,7 @@
 
             if (this.options.outsideScrollCloseTrigger) {
                 this.listenTo('scroll', e => this.isMinimized() || this.close(), { passive: true })
-                this.listen([window, document.body], 'scroll', e => this.isMinimized() || this.close(), { passive: true })
+                this.listen([window], 'scroll', e => this.isMinimized() || this.close(), { passive: true })
             }
 
             if (this.options.outsideClickCloseTrigger) {
@@ -342,8 +376,18 @@
             }
 
             // MOUSE EVENTS OTTIMIZZATI
-            this.listen([window, document.body], 'mousemove', e => {
-                if (!e.clientX || !this.resizing) return
+            this.listen([window], 'mousemove', e => {
+                if (!this.resizing) return
+
+                // Rete di sicurezza: se il tasto è già stato rilasciato (mouseup
+                // avvenuto fuori dalla finestra, quindi mai ricevuto) sblocchiamo
+                // lo stato invece di lasciarlo appeso — vedi commento su mouseup.
+                if (e.buttons === 0) {
+                    this.resizing = false
+                    return
+                }
+
+                if (!e.clientX) return
 
                 let width = this.onRight ? window.innerWidth - e.clientX : e.clientX
                 width = width / window.innerWidth * 100
@@ -351,10 +395,18 @@
                 this.el.sidePreview.style.width = width + 'vw'
             }, { passive: true })
 
-            this.listen([window, document.body], 'mouseup', e => {
-                if (!e.clientX || !this.resizing) return
+            this.listen([window], 'mouseup', e => {
+                if (!this.resizing) return
 
+                // Lo sblocco va fatto PRIMA di qualsiasi altro return: se si
+                // rilasciava il divisorio sul bordo sinistro (clientX === 0) il
+                // vecchio controllo `!e.clientX` usciva subito e this.resizing
+                // restava true per sempre. Da quel momento
+                // searchLinkAndTriggerPopup() e close() uscivano immediatamente:
+                // popup bloccato e nessun trigger funzionante fino al reload.
                 setTimeout(() => this.resizing = false, 200)
+
+                if (!e.clientX) return
 
                 if (!this.el.sidePreview.style.width.slice(0, -2)) {
                     return
@@ -369,7 +421,7 @@
             // CHIUSURA AL BORDO SINISTRO: quando il mouse tocca il bordo
             // sinistro della pagina (clientX === 0), chiudi l'anteprima come
             // un click outside. Ignora durante resize/minimized.
-            this.listen([window, document.body], 'mousemove', (e) => {
+            this.listen([window], 'mousemove', (e) => {
                 if (e.clientX > 0) return
                 if (this.resizing) return
                 if (!this.isOpen()) return
@@ -600,7 +652,7 @@
 
             this.el.sidePreview.appendChild(this.el.scrollButtons)
 
-            document.body.appendChild(this.el.sidePreview)
+            ; (document.body || document.documentElement).appendChild(this.el.sidePreview)
         }
 
         getImageZoomPerc() {
@@ -618,11 +670,31 @@
 
         retrieveOptions(cb) {
             try {
-                chrome.storage.sync.get(null, options => cb(options))
-            } catch (e) { }
+                chrome.storage.sync.get(null, options => cb(options || {}))
+            } catch (e) {
+                // Meglio partire con i default che restare inerti sulla pagina.
+                cb({})
+            }
+        }
+
+        // Rimette il wrapper nel DOM se ne è uscito. Serve sui siti che
+        // sostituiscono <body> navigando (Turbo/Hotwire: GitHub, app Rails, …):
+        // il nodo appeso al vecchio body resta vivo in memoria ma staccato,
+        // quindi aggiungergli 'prevue--visible' non mostrava assolutamente
+        // nulla. Sintomo: alt+↑ e drag sembrano non fare più niente finché non
+        // si ricarica la pagina.
+        ensureMounted() {
+            const wrapper = this.el.sidePreview
+
+            if (!wrapper || wrapper.isConnected) return
+
+            document.getElementById('prevue--wrapper')?.remove()
+                ; (document.body || document.documentElement).appendChild(wrapper)
         }
 
         sidePreview(type) {
+            this.ensureMounted()
+
             this.el.sidePreview.classList.toggle('prevue--right', this.shouldOpenOnTheRight())
 
             if (type === 'image') {
@@ -936,7 +1008,7 @@
         }
 
         listenForBackgroundMessages() {
-            chrome.runtime.onMessage.addListener((req, sender, respond) => {
+            const listener = (req, sender, respond) => {
                 if (req.action === 'reportingIframeUrl' && this.url !== req.url) {
                     // Controllo blacklist per URL iframe
                     if (isCompletelyBlocked(req.url)) {
@@ -956,18 +1028,37 @@
                 respond()
 
                 return true
+            }
+
+            chrome.runtime.onMessage.addListener(listener)
+
+            // Anche questo va staccato quando lo script viene re-iniettato:
+            // altrimenti le istanze vecchie continuano a rispondere ai messaggi
+            // del background aggiornando wrapper ormai staccati dal DOM.
+            prevueAbort.signal.addEventListener('abort', () => {
+                try {
+                    chrome.runtime.onMessage.removeListener(listener)
+                } catch (e) { }
             })
         }
 
         listen(els, event, handler, options = {}) {
             els.map(el => el.addEventListener(event, e => this.isContextInvalidated() || handler(e), {
                 passive: false,
-                ...options
+                ...options,
+                signal: prevueAbort.signal
             }))
         }
 
+        // I trigger si agganciano a `document`, MAI a `document.body`: i siti
+        // che navigano con Turbo/Hotwire (GitHub in testa, ma anche molti altri
+        // SPA) rimpiazzano l'elemento <body> a ogni navigazione interna, e con
+        // esso sparivano tutti i listener — drag compreso — finché non si
+        // ricaricava la pagina. `document` non viene mai sostituito e tutti gli
+        // eventi usati qui (drag*, click, keydown, mouse*, scroll) risalgono
+        // fino a lì.
         listenTo(event, handler, options = {}) {
-            this.listen([document.body], event, handler, options)
+            this.listen([document], event, handler, options)
         }
 
         isContextInvalidated() {
