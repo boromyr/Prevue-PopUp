@@ -1,9 +1,32 @@
 [
   {
+    "id": 2,
+    "priority": 2,
+    "condition": {
+      "urlFilter": "||challenges.cloudflare.com/",
+      "resourceTypes": ["sub_frame"]
+    },
+    "action": {
+      "type": "allow"
+    }
+  },
+  {
+    "id": 3,
+    "priority": 2,
+    "condition": {
+      "urlFilter": "/cdn-cgi/challenge-platform/",
+      "resourceTypes": ["sub_frame"]
+    },
+    "action": {
+      "type": "allow"
+    }
+  },
+  {
     "id": 1,
     "priority": 1,
     "condition": {
-      "urlFilter": "*"
+      "urlFilter": "*",
+      "resourceTypes": ["sub_frame"]
     },
     "action": {
       "type": "modifyHeaders",
@@ -14,10 +37,6 @@
         },
         {
           "header": "content-security-policy",
-          "operation": "remove"
-        },
-        {
-          "header": "cross-origin-embedder-policy",
           "operation": "remove"
         }
       ]

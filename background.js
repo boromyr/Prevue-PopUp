@@ -149,15 +149,32 @@ allowThirdPartyCookiesForEmbeddedSites();
 // ============================================================================
 // RIMOZIONE HEADER ANTI-EMBEDDING — ruleset statico SEMPRE ATTIVO
 // ============================================================================
-// Il ruleset statico "disable-csp" (rules.json) rimuove X-Frame-Options /
-// Content-Security-Policy / COEP: senza, i siti mostrano "rifiutato la
-// connessione" dentro l'iframe dell'anteprima.
+// Il ruleset statico "disable-csp" (rules.json) rimuove X-Frame-Options e
+// Content-Security-Policy: senza, i siti mostrano "rifiutato la connessione"
+// dentro l'iframe dell'anteprima.
 //
 // Prima veniva acceso per-anteprima e spento dopo 8s: abilitare un ruleset
 // statico via updateEnabledRulesets NON è affidabile per la richiesta subito
 // successiva (race) → fallimenti intermittenti. Soluzione: lo attiviamo UNA
 // VOLTA all'avvio del service worker — molto prima di qualsiasi anteprima — e
 // non lo spegniamo più. Nessuna race possibile.
+//
+// PERÒ, essendo sempre attivo, il ruleset agisce su TUTTA la navigazione, non
+// solo sulle anteprime: va quindi tenuto il più stretto possibile.
+//   - resourceTypes: ["sub_frame"] — l'anteprima carica il sito in un iframe
+//     annidato dentro prevue.html, e questi header contano solo per i documenti
+//     incorniciati. Senza il filtro la regola colpiva anche script, XHR,
+//     immagini ecc. (il default DNR è "tutti i tipi tranne main_frame"), dove
+//     non serve a niente e può solo fare danni.
+//   - cross-origin-embedder-policy NON va più rimosso. Una pagina che invia
+//     COEP: require-corp (tipicamente l'interstiziale "Verifying you are
+//     human" di Cloudflare, che è un main_frame e quindi NON viene toccato)
+//     può incorporare un iframe cross-origin solo se anche quell'iframe invia
+//     COEP. Il widget Turnstile di challenges.cloudflare.com lo invia:
+//     rimuoverglielo faceva rifiutare l'iframe al genitore, il captcha non
+//     compariva mai e la pagina restava bloccata in attesa di verifica.
+//     Per l'anteprima quella rimozione non serve: prevue.html non imposta COEP,
+//     quindi un figlio con require-corp è comunque incorporabile.
 async function ensureCspRulesetEnabled() {
     if (!chrome.declarativeNetRequest || !chrome.declarativeNetRequest.updateEnabledRulesets) {
         return;

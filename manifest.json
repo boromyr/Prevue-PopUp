@@ -19,6 +19,10 @@
       "matches": [
         "<all_urls>"
       ],
+      "exclude_matches": [
+        "https://challenges.cloudflare.com/*",
+        "*://*/cdn-cgi/challenge-platform/*"
+      ],
       "css": [
         "prevue.css"
       ],
@@ -46,6 +50,10 @@
       "matches": [
         "http://*/*",
         "https://*/*"
+      ],
+      "exclude_matches": [
+        "https://challenges.cloudflare.com/*",
+        "*://*/cdn-cgi/challenge-platform/*"
       ],
       "js": [
         "darkreader-fix.js"

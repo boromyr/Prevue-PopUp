@@ -116,6 +116,54 @@
         return; // TERMINA IMMEDIATAMENTE - ZERO OVERHEAD
     }
 
+    // VERIFICA CLOUDFLARE / TURNSTILE — L'ESTENSIONE SI TOGLIE DI MEZZO
+    // Con Prevue attivo sulla pagina che lo ospita, il widget Turnstile non
+    // completa mai l'handshake e Cloudflare logga "Turnstile Widget seem to
+    // have hung": il box con lo spinner non compare e la pagina resta in
+    // attesa di verifica per sempre. Non sono gli header di rete (le regole
+    // 'allow' in rules.json escludono già challenges.cloudflare.com dal
+    // ruleset), è la presenza dello script di contenuto sulla pagina ospite.
+    //
+    // Su una pagina di verifica Prevue è comunque inutile — non c'è niente da
+    // anteprimare e la pagina viene sostituita appena la verifica passa —
+    // quindi la scelta è semplice: non inizializzare affatto.
+    const CLOUDFLARE_CHALLENGE_MARKERS = [
+        // Contenitori dell'interstiziale ("Esecuzione della verifica di sicurezza")
+        '#challenge-form',
+        '#challenge-stage',
+        '#challenge-running',
+        '#challenge-body-text',
+        '#cf-challenge-running',
+        // Widget Turnstile incorporato in una pagina normale (es. form di login)
+        '.cf-turnstile',
+        'script[src*="challenges.cloudflare.com"]',
+        'iframe[src*="challenges.cloudflare.com"]'
+    ].join(',');
+
+    const hasCloudflareChallenge = () => {
+        try {
+            return !!document.querySelector(CLOUDFLARE_CHALLENGE_MARKERS);
+        } catch (e) {
+            return false;
+        }
+    };
+
+    // Smonta SOLO la propria istanza (prevueAbort, definito più sotto), non
+    // window.__prevueTeardown: quest'ultimo potrebbe nel frattempo puntare a
+    // un'istanza più recente, che un timer in ritardo spegnerebbe per errore.
+    const disablePrevueHere = (reason) => {
+        if (prevueAbort.signal.aborted) return;
+
+        console.log('Prevue: disattivato su questa pagina —', reason);
+        document.getElementById('prevue--wrapper')?.remove();
+        prevueAbort.abort();
+    };
+
+    if (hasCloudflareChallenge()) {
+        console.log('Prevue: verifica Cloudflare rilevata, estensione disattivata qui:', location.href);
+        return; // TERMINA IMMEDIATAMENTE
+    }
+
     // SOLO SE IL SITO NON È BLACKLISTED, PROCEDI CON L'INIZIALIZZAZIONE
     console.log('Prevue: Site allowed, initializing extension for:', location.href);
 
@@ -1083,5 +1131,18 @@
     App.isFramed()
         ? App.initInsideIframe()
         : App.init()
+
+    // Il widget Turnstile può essere iniettato DOPO document_idle (form di
+    // login, challenge che parte su interazione): in quel caso il controllo
+    // iniziale non lo vede. Qualche verifica ritardata e limitata nel numero —
+    // niente MutationObserver permanente, che su pagine con molto DOM churn
+    // costerebbe più del problema che risolve.
+    if (!App.isFramed()) {
+        [800, 2500, 6000].forEach(delay => setTimeout(() => {
+            if (!hasCloudflareChallenge()) return
+
+            disablePrevueHere('verifica Cloudflare comparsa dopo il caricamento')
+        }, delay))
+    }
 
 })()
