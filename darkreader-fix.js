@@ -28,8 +28,12 @@ const FORCE_LIGHT_SITES = [
 
     // Confronto con confine di dominio: "aliexpress.com" combacia con
     // "aliexpress.com" e "it.aliexpress.com", NON con "notaliexpress.com".
+    // I PDF sono sempre esclusi da DarkReader (invertirebbe i colori del
+    // documento), indipendentemente dal dominio: bypassano la whitelist.
+    const isPdf = document.contentType === 'application/pdf'
+        || /\.pdf$/i.test(location.pathname);
     const host = location.hostname;
-    if (!FORCE_LIGHT_SITES.some((site) => host === site || host.endsWith('.' + site))) return;
+    if (!isPdf && !FORCE_LIGHT_SITES.some((site) => host === site || host.endsWith('.' + site))) return;
 
     // Attivo SOLO dentro un iframe di QUESTA estensione (prevue.html), non
     // quando il sito è embeddato da altre estensioni.
