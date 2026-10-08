@@ -572,18 +572,27 @@
             }
         }
 
-        // I risultati di Google possono puntare a google.*/url?…&url=<destinazione>
-        // (o q=) invece che direttamente al sito. Si usa la destinazione vera:
-        // così un PDF viene riconosciuto subito dall'estensione .pdf (niente
-        // primo caricamento con sandbox bloccato da Edge) e il titolo mostra
-        // il sito giusto.
+        // I motori di ricerca possono puntare a un proprio redirect invece che
+        // direttamente al sito:
+        //   - Google: google.*/url?…&url=<destinazione> (o q=)
+        //   - Bing:   bing.com/ck/a?…&u=a1<destinazione in base64url>
+        // Si usa la destinazione vera: così un PDF viene riconosciuto subito
+        // dall'estensione .pdf (niente primo caricamento con sandbox bloccato
+        // da Edge) e il titolo mostra il sito giusto.
         unwrapRedirectUrl(url) {
             try {
                 const u = new URL(url)
+                let target = null
                 if (/(^|\.)google\.[a-z.]+$/i.test(u.hostname) && u.pathname === '/url') {
-                    const target = u.searchParams.get('url') || u.searchParams.get('q')
-                    if (target && /^https?:\/\//i.test(target)) return target
+                    target = u.searchParams.get('url') || u.searchParams.get('q')
+                } else if (/(^|\.)bing\.com$/i.test(u.hostname) && u.pathname === '/ck/a') {
+                    const encoded = u.searchParams.get('u')
+                    if (encoded?.startsWith('a1')) {
+                        const b64 = encoded.slice(2).replace(/-/g, '+').replace(/_/g, '/')
+                        target = atob(b64 + '='.repeat((4 - b64.length % 4) % 4))
+                    }
                 }
+                if (target && /^https?:\/\//i.test(target)) return target
             } catch (e) { }
             return url
         }
@@ -796,9 +805,16 @@
             //       (2) setupImprobableApology (background.js) blocca top-navigation
             //   - URL già riconosciuti come PDF dal background (vedi reloadWithoutSandbox):
             //     dalla seconda apertura in poi niente caricamento bloccato
+            //   - AllDataSheet (tutti i domini nazionali): lo userscript "AllDataSheet PDF"
+            //     scarica il datasheet e lo mostra in un iframe blob: col lettore di
+            //     Edge, che il sandbox ereditato bloccherebbe. Le navigazioni blob:
+            //     non passano da webRequest: il background decide sul dominio finale
+            //     (NO_SANDBOX_HOSTS), questa regex evita il primo caricamento sprecato
+            //     quando il link punta già ad AllDataSheet.
             const knownPdf = this.knownPdfUrls.has(this.url)
             const skipSandbox = knownPdf
                 || /\.pdf(\?[^#]*)?(#.*)?$/i.test(this.url)
+                || /^https?:\/\/([^/]+\.)?alldatasheet[a-z]*\.[a-z.]+\//i.test(this.url)
                 || /^https?:\/\/(www\.)?ti\.com\/lit\//i.test(this.url)
                 || /^https?:\/\/(?:www\.|m\.)?youtube\.com\//i.test(this.url)
                 || /^https?:\/\/youtu\.be\//i.test(this.url)

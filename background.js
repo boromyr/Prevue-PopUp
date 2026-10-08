@@ -557,6 +557,14 @@ chrome.runtime.onInstalled.addListener(async function (details) {
 // ricaricarla senza sandbox.
 const EXTENSION_ORIGIN = chrome.runtime.getURL("").replace(/\/$/, "");
 
+// Siti da aprire SEMPRE senza sandbox, riconosciuti dal dominio FINALE (dopo
+// i redirect di Bing, Google, ecc.). AllDataSheet: lo userscript "AllDataSheet
+// PDF" mostra il datasheet in un iframe blob: col lettore di Edge, che il
+// sandbox ereditato bloccherebbe; le navigazioni blob: non passano da
+// webRequest, quindi qui si decide sulla pagina che lo ospita.
+// Tenere allineato con la regex equivalente in prevue.js (openIframePopup).
+const NO_SANDBOX_HOSTS = /(^|\.)alldatasheet[a-z]*\.[a-z.]+$/i;
+
 // tabId -> Set di frameId dei frame prevue.html. Il frame del sito è figlio di
 // prevue.html, e iframe.js ne avvia la navigazione: l'initiator della prima
 // richiesta è quindi l'origine dell'estensione. Si memorizza il frame padre
@@ -589,6 +597,8 @@ if (chrome.webRequest) {
             ?.find((h) => h.name.toLowerCase() === "content-type")?.value || "";
         if (/\bpdf\b/i.test(contentType)) {
             unsandboxPreview(details.tabId, "PDF", details.url, true);
+        } else if (NO_SANDBOX_HOSTS.test(new URL(details.url).hostname)) {
+            unsandboxPreview(details.tabId, "Sito senza sandbox", details.url, false);
         }
     }, subFrames, ["responseHeaders"]);
 
