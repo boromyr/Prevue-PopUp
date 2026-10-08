@@ -186,6 +186,7 @@
             this.onRight = false
             this.resizing = false
             this.iframeBaseUrl = chrome.runtime.getURL('/prevue.html')
+            this.knownPdfUrls = new Set()
             this._lastPanningTime = 0
         }
 
@@ -546,6 +547,8 @@
                 type = 'image'
             }
 
+            if (url) url = this.unwrapRedirectUrl(url)
+
             // CONTROLLO BLACKLIST PER URL TARGET
             if (url && isCompletelyBlocked(url)) {
                 console.log('Prevue: Target URL is blacklisted, skipping:', url);
@@ -567,6 +570,22 @@
                     this.updatePreview(type)
                 }
             }
+        }
+
+        // I risultati di Google possono puntare a google.*/url?…&url=<destinazione>
+        // (o q=) invece che direttamente al sito. Si usa la destinazione vera:
+        // così un PDF viene riconosciuto subito dall'estensione .pdf (niente
+        // primo caricamento con sandbox bloccato da Edge) e il titolo mostra
+        // il sito giusto.
+        unwrapRedirectUrl(url) {
+            try {
+                const u = new URL(url)
+                if (/(^|\.)google\.[a-z.]+$/i.test(u.hostname) && u.pathname === '/url') {
+                    const target = u.searchParams.get('url') || u.searchParams.get('q')
+                    if (target && /^https?:\/\//i.test(target)) return target
+                }
+            } catch (e) { }
+            return url
         }
 
         prebuildHtml(defaultWidth) {
@@ -775,7 +794,11 @@
             //     Permission Policy. Il frame-busting di YouTube è gestito su due livelli:
             //       (1) youtube-fix.js (content_script MAIN world) blocca i self-reload
             //       (2) setupImprobableApology (background.js) blocca top-navigation
-            const skipSandbox = /\.pdf(\?[^#]*)?(#.*)?$/i.test(this.url)
+            //   - URL già riconosciuti come PDF dal background (vedi reloadWithoutSandbox):
+            //     dalla seconda apertura in poi niente caricamento bloccato
+            const knownPdf = this.knownPdfUrls.has(this.url)
+            const skipSandbox = knownPdf
+                || /\.pdf(\?[^#]*)?(#.*)?$/i.test(this.url)
                 || /^https?:\/\/(www\.)?ti\.com\/lit\//i.test(this.url)
                 || /^https?:\/\/(?:www\.|m\.)?youtube\.com\//i.test(this.url)
                 || /^https?:\/\/youtu\.be\//i.test(this.url)
@@ -789,7 +812,40 @@
             // Il ruleset che rimuove X-Frame-Options / CSP è SEMPRE attivo
             // (abilitato all'avvio del service worker, vedi ensureCspRulesetEnabled
             // in background.js). Nessun toggle per-anteprima → nessuna race.
-            this.el.sidePreviewIframe.src = `${this.iframeBaseUrl}?${btoa(this.url)}`
+            this.el.sidePreviewIframe.src = this.previewFrameUrl(knownPdf)
+        }
+
+        // "&pdf" dice a iframe.js di aggiungere #view=FitH anche quando l'URL
+        // non finisce in .pdf (base64 non contiene mai "&").
+        previewFrameUrl(isPdf) {
+            return `${this.iframeBaseUrl}?${btoa(this.url)}${isPdf ? '&pdf' : ''}`
+        }
+
+        // Il background ha visto che l'anteprima sandboxed sta caricando un PDF
+        // (o che Edge l'ha bloccata): la ricarica senza sandbox. Succede al più
+        // una volta per anteprima, perché senza sandbox non scatta più.
+        reloadWithoutSandbox(isPdf) {
+            const iframe = this.el?.sidePreviewIframe
+            if (!this.url || !iframe?.hasAttribute('sandbox')) return
+            if (!this.el.sidePreview?.classList.contains('prevue--visible')) return
+
+            if (isPdf) this.knownPdfUrls.add(this.url)
+
+            // Iframe NUOVO al posto di quello vecchio: la pagina "bloccata da
+            // Edge" del primo tentativo sparisce subito, e il 'load' ascoltato
+            // è sicuramente quello del caricamento buono (sul vecchio elemento
+            // potrebbe scattare quello del tentativo bloccato). Resta nascosto
+            // fino al load, con un fallback se non arriva.
+            const fresh = iframe.cloneNode(false)
+            fresh.removeAttribute('sandbox')
+            fresh.style.visibility = 'hidden'
+            const reveal = () => { fresh.style.visibility = '' }
+            fresh.addEventListener('load', reveal, { once: true })
+            setTimeout(reveal, 3000)
+            fresh.src = this.previewFrameUrl(isPdf)
+
+            iframe.replaceWith(fresh)
+            this.el.sidePreviewIframe = fresh
         }
 
         shouldOpenOnTheRight() {
@@ -1071,6 +1127,10 @@
 
                 else if (req.action === 'pressedEscape') {
                     this.close()
+                }
+
+                else if (req.action === 'prevueUnsandbox') {
+                    this.reloadWithoutSandbox(req.pdf)
                 }
 
                 respond()

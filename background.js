@@ -545,10 +545,68 @@ chrome.runtime.onInstalled.addListener(async function (details) {
     return true;
 });
 
+// ============================================================================
+// PDF NELL'ANTEPRIMA — togli il sandbox quando serve
+// ============================================================================
+// Edge blocca il viewer PDF dentro un iframe con sandbox ("Questa pagina è
+// stata bloccata da Microsoft Edge"). prevue.js toglie il sandbox solo se
+// l'URL finisce in .pdf, ma molti link a PDF non lo fanno: redirect dei
+// risultati Google, URL di download, arxiv.org/pdf/…, ecc.
+// Qui osserviamo la risposta REALE del frame dell'anteprima (dopo eventuali
+// redirect): se è un PDF, o se Edge l'ha bloccata, chiediamo a prevue.js di
+// ricaricarla senza sandbox.
+const EXTENSION_ORIGIN = chrome.runtime.getURL("").replace(/\/$/, "");
+
+// tabId -> Set di frameId dei frame prevue.html. Il frame del sito è figlio di
+// prevue.html, e iframe.js ne avvia la navigazione: l'initiator della prima
+// richiesta è quindi l'origine dell'estensione. Si memorizza il frame padre
+// per riconoscere anche le navigazioni successive nello stesso frame (redirect
+// via JS, link cliccati dentro l'anteprima), che hanno un altro initiator.
+const prevueContainerFrames = new Map();
+
+function isInsidePrevue(details) {
+    return prevueContainerFrames.get(details.tabId)?.has(details.parentFrameId) ?? false;
+}
+
+function unsandboxPreview(tabId, reason, url, pdf) {
+    console.log(`[Prevue] ${reason} nell'anteprima, ricarico senza sandbox:`, url);
+    chrome.tabs.sendMessage(tabId, { action: "prevueUnsandbox", pdf }).catch(() => { });
+}
+
+if (chrome.webRequest) {
+    const subFrames = { urls: ["http://*/*", "https://*/*"], types: ["sub_frame"] };
+
+    chrome.webRequest.onBeforeRequest.addListener((details) => {
+        if (details.tabId < 0 || details.initiator !== EXTENSION_ORIGIN) return;
+        let frames = prevueContainerFrames.get(details.tabId);
+        if (!frames) prevueContainerFrames.set(details.tabId, (frames = new Set()));
+        frames.add(details.parentFrameId);
+    }, subFrames);
+
+    chrome.webRequest.onHeadersReceived.addListener((details) => {
+        if (!isInsidePrevue(details)) return;
+        const contentType = details.responseHeaders
+            ?.find((h) => h.name.toLowerCase() === "content-type")?.value || "";
+        if (/\bpdf\b/i.test(contentType)) {
+            unsandboxPreview(details.tabId, "PDF", details.url, true);
+        }
+    }, subFrames, ["responseHeaders"]);
+
+    // Rete di sicurezza: qualunque altro blocco di Edge sul frame (PDF servito
+    // con un Content-Type sbagliato, ecc.). prevue.js toglie il sandbox una
+    // sola volta per anteprima, quindi niente loop.
+    chrome.webRequest.onErrorOccurred.addListener((details) => {
+        if (isInsidePrevue(details) && details.error === "net::ERR_BLOCKED_BY_CLIENT") {
+            unsandboxPreview(details.tabId, "Frame bloccato", details.url, false);
+        }
+    }, subFrames);
+}
+
 // Cleanup cache quando un tab viene chiuso
 chrome.tabs.onRemoved.addListener((tabId) => {
     lastInjectionTime.delete(tabId);
     activeInjections.delete(tabId);
+    prevueContainerFrames.delete(tabId);
 });
 
 // Cleanup periodico più aggressivo

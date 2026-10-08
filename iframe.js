@@ -1,7 +1,11 @@
-const url = atob(location.search.slice(1))
+// prevue.html?<url in base64>[&pdf] — "&pdf" lo aggiunge prevue.js quando il
+// background ha riconosciuto un PDF da un URL senza estensione .pdf
+const [encodedUrl, ...flags] = location.search.slice(1).split('&')
+const url = atob(encodedUrl)
 // Stessa regex di skipSandbox in prevue.js: riconosce anche i PDF con
 // frammento (es. x.pdf#page=3), che prima non ricevevano #view=FitH
-const finalUrl = /\.pdf(\?[^#]*)?(#.*)?$/i.test(url)
+const isPdf = flags.includes('pdf') || /\.pdf(\?[^#]*)?(#.*)?$/i.test(url)
+const finalUrl = isPdf
     ? url.replace(/#.*$/, '') + '#view=FitH'
     : url
 

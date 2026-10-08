@@ -66,6 +66,7 @@
   "permissions": [
     "storage",
     "declarativeNetRequest",
+    "webRequest",
     "activeTab",
     "scripting",
     "tabs",
