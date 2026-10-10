@@ -106,8 +106,22 @@
             // Pattern dominio/IP: confronto sul SOLO hostname. Prima si cercava
             // nell'intero URL e pattern come "10.0." bloccavano per errore pagine
             // con numeri di versione nel percorso (es. .../releases/tag/v10.0.1).
-            return hostname.includes(site);
+            return hostMatchesSite(hostname, site);
         });
+    }
+
+    // Confronto con confine di etichetta, non sottostringa: con includes()
+    // "bank." bloccava worldbank.org, "secure." insecure.org, "zoom.us"
+    // kazoom.us, ecc.
+    //   - "bank." / "192.168." (finiscono col punto): prefisso dell'host o di
+    //     una sua etichetta → bank.x.it, online.bank.x.it, 192.168.1.6
+    //   - "vimeo.com": il dominio stesso o un suo sottodominio
+    function hostMatchesSite(hostname, site) {
+        const host = hostname.replace(/^\[|\]$/g, ''); // IPv6: "[::1]" → "::1"
+        if (site.endsWith('.')) {
+            return host.startsWith(site) || host.includes('.' + site);
+        }
+        return host === site || host.endsWith('.' + site);
     }
 
     // CONTROLLO IMMEDIATO - TERMINAZIONE PRECOCE
@@ -167,6 +181,16 @@
     // SOLO SE IL SITO NON È BLACKLISTED, PROCEDI CON L'INIZIALIZZAZIONE
     console.log('Prevue: Site allowed, initializing extension for:', location.href);
 
+    // La regola anti frame-busting (setupImprobableApology in background.js)
+    // redirige la scheda su sé stessa con #prevue:sorry: togli il frammento
+    // dall'indirizzo, così non resta appiccicato a ricariche e segnalibri.
+    if (window.self === window.top && location.hash.includes('prevue:sorry')) {
+        try {
+            const clean = location.href.replace(/#prevue:sorry$/, '').replace(/#$/, '')
+            history.replaceState(history.state, '', clean)
+        } catch (e) { }
+    }
+
     // SMONTAGGIO DELL'ISTANZA PRECEDENTE
     // Lo script può essere iniettato una seconda volta nella stessa pagina
     // (chrome.scripting.executeScript da background.js: reinjectPrevueHere /
@@ -203,7 +227,25 @@
                 // Difesa: se lo storage è vuoto (prima esecuzione, sync non
                 // ancora popolato) options.triggers è undefined e setupTriggers
                 // crasherebbe, lasciando l'estensione inerte sulla pagina.
-                this.options = { target: 'both', triggers: [], ...options }
+                // Stessi default di options.js: senza targetLinkTypes e i
+                // ritardi del drag, a storage vuoto nessuna anteprima si apriva.
+                this.options = {
+                    target: 'both',
+                    targetLinkTypes: 'both',
+                    openPosition: 'auto',
+                    displayUrl: true,
+                    urlPosition: 'top',
+                    triggerOpenDelay: 50,
+                    triggerReleaseDelay: 400,
+                    triggers: [{ key: '', action: 'drag' }],
+                    ...options
+                }
+                // Le vecchie options.html salvavano "links"/"images" (valori
+                // copiati dal select "target") invece di "internal"/"external".
+                this.options.targetLinkTypes = {
+                    links: 'internal',
+                    images: 'external'
+                }[this.options.targetLinkTypes] || this.options.targetLinkTypes
                 this.targetLinks = ['both', 'links'].includes(this.options.target)
                 this.targetImages = ['both', 'images'].includes(this.options.target)
 
@@ -457,12 +499,17 @@
 
                 if (!e.clientX) return
 
-                if (!this.el.sidePreview.style.width.slice(0, -2)) {
+                // Si salva solo una larghezza impostata dal trascinamento (vw).
+                // Un clic sul divisorio senza muoverlo lasciava la larghezza
+                // dell'espansione hover ("1100px") o di Google ("640px"), che
+                // veniva salvata come 1100% → anteprima larga 1100vw ovunque.
+                const width = this.el.sidePreview.style.width
+                if (!width.endsWith('vw') || !width.slice(0, -2)) {
                     return
                 }
 
                 chrome.storage.sync.set({
-                    width: this.el.sidePreview.style.width.slice(0, -2),
+                    width: width.slice(0, -2),
                     widthUnit: '%'
                 })
             })
@@ -556,9 +603,12 @@
             }
 
             if (url && this.url !== url) {
+                // Si controlla il link NUOVO: prima isExternal() leggeva
+                // this.url, cioè l'anteprima precedente (o null), quindi con
+                // "External" non si apriva mai niente e con "Internal" tutto.
                 if (this.options.targetLinkTypes === 'both'
-                    || (this.options.targetLinkTypes === 'external' && this.isExternal())
-                    || (this.options.targetLinkTypes === 'internal' && this.isInternal())) {
+                    || (this.options.targetLinkTypes === 'external' && this.isExternal(url))
+                    || (this.options.targetLinkTypes === 'internal' && this.isInternal(url))) {
 
                     this.url = url
                     // Registra sempre l'evento scatenante: shouldOpenOnTheRight()
@@ -592,7 +642,12 @@
                         target = atob(b64 + '='.repeat((4 - b64.length % 4) % 4))
                     }
                 }
-                if (target && /^https?:\/\//i.test(target)) return target
+                // Normalizzato con new URL(): searchParams.get() restituisce
+                // la destinazione DECODIFICATA. Così com'era, un "à" (es.
+                // wiki/Città) faceva lanciare btoa() in previewFrameUrl e
+                // l'anteprima non si apriva; e caratteri come < > finivano
+                // grezzi nel titolo (innerHTML).
+                if (target && /^https?:\/\//i.test(target)) return new URL(target).href
             } catch (e) { }
             return url
         }
@@ -818,17 +873,35 @@
                 || /^https?:\/\/(www\.)?ti\.com\/lit\//i.test(this.url)
                 || /^https?:\/\/(?:www\.|m\.)?youtube\.com\//i.test(this.url)
                 || /^https?:\/\/youtu\.be\//i.test(this.url)
-            if (skipSandbox) {
-                this.el.sidePreviewIframe.removeAttribute('sandbox')
-            } else {
-                this.el.sidePreviewIframe.setAttribute('sandbox',
-                    'allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals allow-downloads allow-pointer-lock allow-presentation')
-            }
-
             // Il ruleset che rimuove X-Frame-Options / CSP è SEMPRE attivo
             // (abilitato all'avvio del service worker, vedi ensureCspRulesetEnabled
             // in background.js). Nessun toggle per-anteprima → nessuna race.
-            this.el.sidePreviewIframe.src = this.previewFrameUrl(knownPdf)
+            if (skipSandbox) {
+                this.el.sidePreviewIframe.removeAttribute('sandbox')
+                this.withNavigationBlock(() => {
+                    this.el.sidePreviewIframe.src = this.previewFrameUrl(knownPdf)
+                })
+            } else {
+                this.el.sidePreviewIframe.setAttribute('sandbox',
+                    'allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals allow-downloads allow-pointer-lock allow-presentation')
+                this.el.sidePreviewIframe.src = this.previewFrameUrl(knownPdf)
+            }
+        }
+
+        // Protezione anti frame-busting a livello rete (setupImprobableApology
+        // in background.js), SOLO per le anteprime senza sandbox. Con il
+        // sandbox (niente allow-top-navigation) il browser rifiuta già da sé
+        // la navigazione della scheda; la regola di rete, invece, redirige
+        // anche le navigazioni senza initiator — barra degli indirizzi, F5,
+        // segnalibri — quindi registrarla per ogni anteprima le rompeva
+        // mentre l'anteprima era aperta.
+        // open() parte solo dopo che la regola è attiva, e solo se nel
+        // frattempo l'anteprima non è stata chiusa o cambiata.
+        withNavigationBlock(open) {
+            const url = this.url
+            this.bg('setupImprobableApology', () => {
+                if (this.url === url && this.isOpen()) open()
+            })
         }
 
         // "&pdf" dice a iframe.js di aggiungere #view=FitH anche quando l'URL
@@ -854,14 +927,19 @@
             // fino al load, con un fallback se non arriva.
             const fresh = iframe.cloneNode(false)
             fresh.removeAttribute('sandbox')
+            fresh.removeAttribute('src')
             fresh.style.visibility = 'hidden'
             const reveal = () => { fresh.style.visibility = '' }
             fresh.addEventListener('load', reveal, { once: true })
             setTimeout(reveal, 3000)
-            fresh.src = this.previewFrameUrl(isPdf)
 
             iframe.replaceWith(fresh)
             this.el.sidePreviewIframe = fresh
+
+            // Senza sandbox serve la protezione di rete (vedi withNavigationBlock).
+            this.withNavigationBlock(() => {
+                if (this.el.sidePreviewIframe === fresh) fresh.src = this.previewFrameUrl(isPdf)
+            })
         }
 
         shouldOpenOnTheRight() {
@@ -878,8 +956,13 @@
         visualUrl(append = '') {
             let isSecure = /^https:\/\//i.test(this.url)
 
-            return (isSecure ? this.lockIconSvg() : '') + `<div>` + this.url
-                .replace(new RegExp(`^${location.origin}`, 'i'), '')
+            // L'URL finisce in innerHTML nella pagina ospite: va escapato.
+            const escapeHtml = s => s.replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`)
+            const url = this.url.toLowerCase().startsWith(location.origin.toLowerCase() + '/')
+                ? this.url.slice(location.origin.length)
+                : this.url
+
+            return (isSecure ? this.lockIconSvg() : '') + `<div>` + escapeHtml(url)
                 .replace(/^(https?:\/\/)www\./, '$1')
                 .replace(/^http:\/\//i, '')
                 .replace(/^https:\/\//i, '')
@@ -899,7 +982,7 @@
             this.previousUrl = this.url + ''
             this.previousUrlType = type
 
-            this.bg('setupImprobableApology', () => this.sidePreview(type))
+            this.sidePreview(type)
         }
 
         setTitle(append = '') {
@@ -908,20 +991,22 @@
             this.el.sidePreviewTitleWrapper.children[0].href = this.url
         }
 
-        isExternal() {
-            if (!this.url) {
+        // Confronto sull'hostname parsato: la vecchia regex non escapava i
+        // punti e trattava "example.com.evil.net" come interno.
+        isExternal(url = this.url) {
+            if (!url) {
                 return false
             }
 
-            if (!this.url.toLowerCase().startsWith('http') && /^\/?[^/]+/.test(this.url)) {
+            try {
+                return new URL(url, location.href).hostname !== location.hostname
+            } catch (e) {
                 return false
             }
-
-            return !new RegExp(`^(http)?s?:?//${location.hostname}`, 'i').test(this.url)
         }
 
-        isInternal() {
-            return !this.isExternal()
+        isInternal(url = this.url) {
+            return !this.isExternal(url)
         }
 
         // PANNING OTTIMIZZATO CON THROTTLING MIGLIORATO
@@ -1024,7 +1109,12 @@
         }
 
         initInsideIframe() {
-            const isInsideExtensionsIframe = !!location.ancestorOrigins?.[0]?.startsWith('chrome-extension://')
+            // Solo dentro prevue.html di QUESTA estensione: con startsWith
+            // ('chrome-extension://') bastava un iframe di un'altra estensione
+            // (sidebar, popup) per mandare reportingIframeUrl e sovrascrivere
+            // url/titolo della pagina anche ad anteprima chiusa.
+            const ourOrigin = chrome.runtime.getURL('').replace(/\/$/, '')
+            const isInsideExtensionsIframe = location.ancestorOrigins?.[0] === ourOrigin
 
             if (isInsideExtensionsIframe) {
                 this.bg({ action: 'reportingIframeUrl', url: location.href })
@@ -1037,7 +1127,9 @@
                     if (e.data.direction === 'top') {
                         window.scrollTo({ top: 0, behavior: 'smooth' })
                     } else {
-                        window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' })
+                        // document.body può essere null (frameset, XML)
+                        const root = document.scrollingElement || document.documentElement
+                        window.scrollTo({ top: root.scrollHeight, behavior: 'smooth' })
                     }
                 }, { passive: true })
             }
@@ -1129,7 +1221,10 @@
 
         listenForBackgroundMessages() {
             const listener = (req, sender, respond) => {
-                if (req.action === 'reportingIframeUrl' && this.url !== req.url) {
+                // Ad anteprima chiusa un report in ritardo non deve rimettere un
+                // url: this.url !== url in searchLinkAndTriggerPopup
+                // impedirebbe poi di riaprire proprio quel link.
+                if (req.action === 'reportingIframeUrl' && this.url !== req.url && this.isOpen()) {
                     // Controllo blacklist per URL iframe
                     if (isCompletelyBlocked(req.url)) {
                         console.log('Prevue: Iframe URL is blacklisted, ignoring:', req.url);

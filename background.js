@@ -6,7 +6,10 @@ console.log(`Loaded Prevue v${chrome.manifest.version} at ${new Date()}`);
 const COMPLETELY_BLOCKED_SITES = [
     // Siti TI e sviluppo che causano problemi di prestazioni
     "webench.ti.com",
+    "github1s.com",
     // "lcsc.com",
+    "claude.ai",
+    "tonestack.yuriturov.com",
     "altium.com",
     "kicad.org",
     "github.dev",
@@ -267,8 +270,22 @@ function isCompletelyBlocked(url) {
         // Pattern dominio/IP: confronto sul SOLO hostname. Prima si cercava
         // nell'intero URL e pattern come "10.0." bloccavano per errore pagine
         // con numeri di versione nel percorso (es. .../releases/tag/v10.0.1).
-        return hostname.includes(site);
+        return hostMatchesSite(hostname, site);
     });
+}
+
+// Confronto con confine di etichetta, non sottostringa: con includes()
+// "bank." bloccava worldbank.org, "secure." insecure.org, "zoom.us"
+// kazoom.us, ecc. Stessa funzione in prevue.js.
+//   - "bank." / "192.168." (finiscono col punto): prefisso dell'host o di
+//     una sua etichetta → bank.x.it, online.bank.x.it, 192.168.1.6
+//   - "vimeo.com": il dominio stesso o un suo sottodominio
+function hostMatchesSite(hostname, site) {
+    const host = hostname.replace(/^\[|\]$/g, ""); // IPv6: "[::1]" → "::1"
+    if (site.endsWith(".")) {
+        return host.startsWith(site) || host.includes("." + site);
+    }
+    return host === site || host.endsWith("." + site);
 }
 
 // Injection ottimizzata con controllo blacklist
@@ -581,7 +598,33 @@ const NO_SANDBOX_HOSTS = /(^|\.)alldatasheet[a-z]*\.[a-z.]+$/i;
 // richiesta è quindi l'origine dell'estensione. Si memorizza il frame padre
 // per riconoscere anche le navigazioni successive nello stesso frame (redirect
 // via JS, link cliccati dentro l'anteprima), che hanno un altro initiator.
+//
+// La mappa è salvata anche in storage.session: il service worker MV3 viene
+// terminato dopo ~30s di inattività e, solo in memoria, si perdeva. Un PDF
+// aperto da un link DENTRO un'anteprima rimasta aperta più a lungo non
+// veniva più riconosciuto (isInsidePrevue → false) e restava bloccato da Edge.
 const prevueContainerFrames = new Map();
+const PREVUE_FRAMES_KEY = "prevueContainerFrames";
+
+// Unione, non sostituzione: gli eventi arrivati prima del caricamento hanno
+// già aggiunto frame alla mappa.
+const prevueFramesLoaded = (chrome.storage?.session
+    ? chrome.storage.session.get(PREVUE_FRAMES_KEY)
+    : Promise.resolve({})
+).then((res) => {
+    for (const [tabId, frameIds] of Object.entries(res[PREVUE_FRAMES_KEY] || {})) {
+        let frames = prevueContainerFrames.get(+tabId);
+        if (!frames) prevueContainerFrames.set(+tabId, (frames = new Set()));
+        frameIds.forEach((id) => frames.add(id));
+    }
+}).catch(() => { });
+
+function savePrevueFrames() {
+    if (!chrome.storage?.session) return;
+    const data = {};
+    for (const [tabId, frames] of prevueContainerFrames) data[tabId] = [...frames];
+    chrome.storage.session.set({ [PREVUE_FRAMES_KEY]: data }).catch(() => { });
+}
 
 function isInsidePrevue(details) {
     return prevueContainerFrames.get(details.tabId)?.has(details.parentFrameId) ?? false;
@@ -599,27 +642,35 @@ if (chrome.webRequest) {
         if (details.tabId < 0 || details.initiator !== EXTENSION_ORIGIN) return;
         let frames = prevueContainerFrames.get(details.tabId);
         if (!frames) prevueContainerFrames.set(details.tabId, (frames = new Set()));
+        if (frames.has(details.parentFrameId)) return;
         frames.add(details.parentFrameId);
+        // Dopo il caricamento, o si sovrascriverebbe lo storage con la sola
+        // mappa parziale di questo risveglio.
+        prevueFramesLoaded.then(savePrevueFrames);
     }, subFrames);
 
     chrome.webRequest.onHeadersReceived.addListener((details) => {
-        if (!isInsidePrevue(details)) return;
-        const contentType = details.responseHeaders
-            ?.find((h) => h.name.toLowerCase() === "content-type")?.value || "";
-        if (/\bpdf\b/i.test(contentType)) {
-            unsandboxPreview(details.tabId, "PDF", details.url, true);
-        } else if (NO_SANDBOX_HOSTS.test(new URL(details.url).hostname)) {
-            unsandboxPreview(details.tabId, "Sito senza sandbox", details.url, false);
-        }
+        prevueFramesLoaded.then(() => {
+            if (!isInsidePrevue(details)) return;
+            const contentType = details.responseHeaders
+                ?.find((h) => h.name.toLowerCase() === "content-type")?.value || "";
+            if (/\bpdf\b/i.test(contentType)) {
+                unsandboxPreview(details.tabId, "PDF", details.url, true);
+            } else if (NO_SANDBOX_HOSTS.test(new URL(details.url).hostname)) {
+                unsandboxPreview(details.tabId, "Sito senza sandbox", details.url, false);
+            }
+        });
     }, subFrames, ["responseHeaders"]);
 
     // Rete di sicurezza: qualunque altro blocco di Edge sul frame (PDF servito
     // con un Content-Type sbagliato, ecc.). prevue.js toglie il sandbox una
     // sola volta per anteprima, quindi niente loop.
     chrome.webRequest.onErrorOccurred.addListener((details) => {
-        if (isInsidePrevue(details) && details.error === "net::ERR_BLOCKED_BY_CLIENT") {
-            unsandboxPreview(details.tabId, "Frame bloccato", details.url, false);
-        }
+        prevueFramesLoaded.then(() => {
+            if (isInsidePrevue(details) && details.error === "net::ERR_BLOCKED_BY_CLIENT") {
+                unsandboxPreview(details.tabId, "Frame bloccato", details.url, false);
+            }
+        });
     }, subFrames);
 }
 
@@ -627,7 +678,9 @@ if (chrome.webRequest) {
 chrome.tabs.onRemoved.addListener((tabId) => {
     lastInjectionTime.delete(tabId);
     activeInjections.delete(tabId);
-    prevueContainerFrames.delete(tabId);
+    prevueFramesLoaded.then(() => {
+        if (prevueContainerFrames.delete(tabId)) savePrevueFrames();
+    });
 });
 
 // Cleanup periodico più aggressivo

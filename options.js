@@ -22,6 +22,12 @@ let options = {
 chrome.storage.sync.get(null).then(res => {
     options = { ...options, ...res }
 
+    // Le versioni precedenti salvavano "links"/"images" per targetLinkTypes
+    // (valori copiati per errore dal select "target"): prevue.js non li
+    // riconosceva e con "Internal"/"External" non si apriva nessuna anteprima.
+    options.targetLinkTypes = { links: 'internal', images: 'external' }[options.targetLinkTypes]
+        || options.targetLinkTypes
+
     chrome.storage.sync.set(options)
 
     document.addEventListener('change', e => {
@@ -46,7 +52,8 @@ chrome.storage.sync.get(null).then(res => {
     })
 
     document.addEventListener('click', e => {
-        if (e.target.tagName !== 'INPUT') return
+        // Senza name (es. input di terze parti) si salverebbe una chiave ""
+        if (e.target.tagName !== 'INPUT' || !e.target.name) return
 
         options[e.target.name] = e.target.type === 'checkbox' ? e.target.checked : e.target.value
 

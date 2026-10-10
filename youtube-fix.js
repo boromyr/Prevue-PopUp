@@ -351,16 +351,26 @@
     };
 
     // Polling leggero: controlla ogni 300ms fino a conferma o timeout 20s
-    const theaterInterval = setInterval(() => {
-        attemptTheater();
-        if (theaterDone) clearInterval(theaterInterval);
-    }, 300);
-    setTimeout(() => clearInterval(theaterInterval), 20000);
+    let theaterInterval = null;
+    let theaterTimeout = null;
+    const startTheaterPolling = () => {
+        clearInterval(theaterInterval);
+        clearTimeout(theaterTimeout);
+        theaterInterval = setInterval(() => {
+            attemptTheater();
+            if (theaterDone) clearInterval(theaterInterval);
+        }, 300);
+        theaterTimeout = setTimeout(() => clearInterval(theaterInterval), 20000);
+    };
+    startTheaterPolling();
 
-    // Alla navigazione SPA (es. click su video correlato) riparte
+    // Alla navigazione SPA (es. click su video correlato) riparte. Prima si
+    // azzerava solo theaterDone, ma il polling era già fermo (theater
+    // trovata o timeout 20s) e nessuno ritentava più.
     document.addEventListener('yt-navigate-finish', () => {
         theaterDone = false;
         lastTheaterClick = 0;
+        startTheaterPolling();
         console.log('[Prevue/YT] yt-navigate-finish: theater reset');
     });
 
