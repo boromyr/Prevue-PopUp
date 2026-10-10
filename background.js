@@ -432,6 +432,21 @@ chrome.runtime.onMessage.addListener((req, sender, respond) => {
         // Registrata PRIMA della chiamata async: protegge dalla race con
         // cleanupStaleRules all'avvio del service worker.
         sessionRulesAddedThisLifetime.add(ruleId);
+        const condition = {
+            urlFilter: "*",
+            tabIds: [tabId],
+            resourceTypes: ["main_frame"],
+        };
+        // Le navigazioni avviate dalla pagina stessa (clic su un link, JS del
+        // sito, es. i risultati di Google) NON vanno bloccate: il frame-busting
+        // da neutralizzare parte dal sito DENTRO l'anteprima, che ha un altro
+        // initiator. Senza questa esclusione, cliccare un link con l'anteprima
+        // aperta (o appena chiusa: teardownNavigationBlock è asincrono e perde
+        // la corsa con la navigazione) ricaricava la pagina con #prevue:sorry.
+        try {
+            const tabHost = new URL(sender.tab?.url || "").hostname;
+            if (tabHost) condition.excludedInitiatorDomains = [tabHost];
+        } catch (e) { }
         chrome.declarativeNetRequest
             .updateSessionRules({
                 addRules: [{
@@ -441,11 +456,7 @@ chrome.runtime.onMessage.addListener((req, sender, respond) => {
                         type: "redirect",
                         redirect: { url: (sender.tab?.url || "about:blank") + "#prevue:sorry" },
                     },
-                    condition: {
-                        urlFilter: "*",
-                        tabIds: [tabId],
-                        resourceTypes: ["main_frame"],
-                    },
+                    condition,
                 }],
             })
             .then(() => respond({ success: true, ruleId }))
