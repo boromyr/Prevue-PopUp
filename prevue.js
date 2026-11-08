@@ -224,42 +224,98 @@
             this.listenForBackgroundMessages()
 
             this.retrieveOptions(options => {
-                // Difesa: se lo storage è vuoto (prima esecuzione, sync non
-                // ancora popolato) options.triggers è undefined e setupTriggers
-                // crasherebbe, lasciando l'estensione inerte sulla pagina.
-                // Stessi default di options.js: senza targetLinkTypes e i
-                // ritardi del drag, a storage vuoto nessuna anteprima si apriva.
-                this.options = {
-                    target: 'both',
-                    targetLinkTypes: 'both',
-                    openPosition: 'auto',
-                    displayUrl: true,
-                    urlPosition: 'top',
-                    triggerOpenDelay: 50,
-                    triggerReleaseDelay: 400,
-                    triggers: [{ key: '', action: 'drag' }],
-                    ...options
-                }
-                // Le vecchie options.html salvavano "links"/"images" (valori
-                // copiati dal select "target") invece di "internal"/"external".
-                this.options.targetLinkTypes = {
-                    links: 'internal',
-                    images: 'external'
-                }[this.options.targetLinkTypes] || this.options.targetLinkTypes
-                this.targetLinks = ['both', 'links'].includes(this.options.target)
-                this.targetImages = ['both', 'images'].includes(this.options.target)
+                this.setOptions(options)
 
-                // NB: si legge da this.options, non da options: se lo storage
-                // risponde con undefined (errore di sync) `options.width`
-                // lanciava un TypeError e setupTriggers() non veniva MAI
-                // eseguito → nessun trigger registrato sulla pagina.
-                this.prebuildHtml((this.options.width || 50) + (this.options.widthUnit === 'px' ? 'px' : 'vw'))
+                this.prebuildHtml(this.defaultWidth())
                 this.setupTriggers()
 
                 // Gestione hover popup tramite JS - mouseenter/mouseleave non bubblano (fix flicker Google)
                 // Eseguito dentro retrieveOptions così this.el.sidePreview esiste già
                 this.setupHoverExpansion();
+
+                this.listenForOptionChanges()
             })
+        }
+
+        setOptions(options) {
+            // Difesa: se lo storage è vuoto (prima esecuzione, sync non
+            // ancora popolato) options.triggers è undefined e setupTriggers
+            // crasherebbe, lasciando l'estensione inerte sulla pagina.
+            // Stessi default di options.js: senza targetLinkTypes e i
+            // ritardi del drag, a storage vuoto nessuna anteprima si apriva.
+            this.options = {
+                target: 'both',
+                targetLinkTypes: 'both',
+                openPosition: 'auto',
+                displayUrl: true,
+                urlPosition: 'top',
+                triggerOpenDelay: 50,
+                triggerReleaseDelay: 400,
+                triggers: [{ key: '', action: 'drag' }],
+                ...options
+            }
+            // Le vecchie options.html salvavano "links"/"images" (valori
+            // copiati dal select "target") invece di "internal"/"external".
+            this.options.targetLinkTypes = {
+                links: 'internal',
+                images: 'external'
+            }[this.options.targetLinkTypes] || this.options.targetLinkTypes
+            this.targetLinks = ['both', 'links'].includes(this.options.target)
+            this.targetImages = ['both', 'images'].includes(this.options.target)
+        }
+
+        // NB: si legge da this.options, non dallo storage grezzo: se lo
+        // storage risponde con undefined (errore di sync) `options.width`
+        // lanciava un TypeError e setupTriggers() non veniva MAI eseguito.
+        defaultWidth() {
+            if (window.location.href.includes("google.com/search")) return '640px'
+            return (this.options.width || 50) + (this.options.widthUnit === 'px' ? 'px' : 'vw')
+        }
+
+        // Le opzioni si leggevano UNA volta, al caricamento della pagina:
+        // cambiando ad es. "Always Right" dal popup della toolbar, le schede
+        // già aperte continuavano a usare il valore vecchio fino al reload.
+        // Ora ogni modifica allo storage si applica subito; i trigger leggono
+        // this.options al momento dell'evento (vedi setupTriggers).
+        listenForOptionChanges() {
+            const listener = (changes, area) => {
+                if (area !== 'sync') return
+                const stored = { ...this.options }
+                for (const [key, { newValue }] of Object.entries(changes)) {
+                    if (newValue === undefined) delete stored[key]
+                    else stored[key] = newValue
+                }
+                this.setOptions(stored)
+                this.applyDisplayOptions()
+
+                // Mai mentre l'anteprima è aperta: lì la larghezza è gestita
+                // da drag ed espansione hover, e il salvataggio dopo un
+                // ridimensionamento arriva proprio da qui.
+                if (('width' in changes || 'widthUnit' in changes) && !this.isOpen()) {
+                    this.el.sidePreview.style.width = this.defaultWidth()
+                }
+            }
+
+            try {
+                chrome.storage.onChanged.addListener(listener)
+            } catch (e) {
+                return
+            }
+            prevueAbort.signal.addEventListener('abort', () => {
+                try {
+                    chrome.storage.onChanged.removeListener(listener)
+                } catch (e) { }
+            })
+        }
+
+        applyDisplayOptions() {
+            const wrapper = this.el.sidePreview
+            wrapper.classList.toggle('prevue--hidden-title', !this.options.displayUrl)
+            wrapper.classList.toggle('prevue--url-bottom', this.options.urlPosition === 'bottom')
+            // Su Google la transizione resta disattivata (vedi setupTriggers)
+            if (!window.location.href.includes("google.com/search?")) {
+                wrapper.style.transition = this.options.openAnimation ? 'opacity .2s, left .2s, right .2s' : ''
+            }
         }
 
         setupHoverExpansion() {
@@ -372,40 +428,39 @@
             }
         }
 
+        // Un'entry malformata nello storage (null, oggetto) non deve far
+        // crashare il controllo.
+        hasDragTrigger() {
+            return Object.values(this.options.triggers || {}).some(t => t?.action === 'drag')
+        }
+
+        // Tutti i listener sono registrati SEMPRE e leggono this.options al
+        // momento dell'evento: così le modifiche alle opzioni valgono subito
+        // (listenForOptionChanges) senza ri-registrare niente. Prima anche il
+        // drag veniva registrato una volta per ogni trigger 'drag' presente.
         setupTriggers() {
-            Object.keys(this.options.triggers).map(t => {
-                const trigger = this.options.triggers[t]
+            this.listenTo('dragstart', () => {
+                if (!this.hasDragTrigger()) return
+                this.dragStart = new Date().getTime()
+                // Reset per non riusare il delta del drag precedente;
+                // il valore definitivo lo ricalcola 'dragend'.
+                this.dragDelta = 0
+                this.closeAllPreviews()
+            })
+            this.listenTo('drag', () => this.dragDelta = new Date().getTime() - this.dragStart)
+            this.listenTo('dragend', e => {
+                if (!this.hasDragTrigger()) return
+                // Il delta va misurato QUI, non sull'ultimo evento
+                // 'drag': un drag molto rapido non ne emette nessuno
+                // e dragDelta resterebbe 0 — sotto triggerOpenDelay
+                // (default 50ms) → anteprima mai aperta.
+                if (this.dragStart) {
+                    this.dragDelta = new Date().getTime() - this.dragStart
+                }
 
-                // Un'entry malformata nello storage non deve far abortire tutto
-                // setupTriggers(): sotto c'è la registrazione di alt+↑, che
-                // altrimenti non verrebbe mai eseguita.
-                if (!trigger) return
-
-                switch (trigger.action) {
-                    case 'drag':
-                        this.listenTo('dragstart', () => {
-                            this.dragStart = new Date().getTime()
-                            // Reset per non riusare il delta del drag precedente;
-                            // il valore definitivo lo ricalcola 'dragend'.
-                            this.dragDelta = 0
-                            this.closeAllPreviews()
-                        })
-                        this.listenTo('drag', () => this.dragDelta = new Date().getTime() - this.dragStart)
-                        this.listenTo('dragend', e => {
-                            // Il delta va misurato QUI, non sull'ultimo evento
-                            // 'drag': un drag molto rapido non ne emette nessuno
-                            // e dragDelta resterebbe 0 — sotto triggerOpenDelay
-                            // (default 50ms) → anteprima mai aperta.
-                            if (this.dragStart) {
-                                this.dragDelta = new Date().getTime() - this.dragStart
-                            }
-
-                            if (this.dragDelta >= this.options.triggerOpenDelay &&
-                                this.dragDelta <= this.options.triggerReleaseDelay) {
-                                this.searchLinkAndTriggerPopup(e, true)
-                            }
-                        })
-                        break
+                if (this.dragDelta >= this.options.triggerOpenDelay &&
+                    this.dragDelta <= this.options.triggerReleaseDelay) {
+                    this.searchLinkAndTriggerPopup(e, true)
                 }
             })
 
@@ -451,20 +506,16 @@
             }
 
             // ALTRI TRIGGER
-            if (this.options.escCloseTrigger) {
-                this.listenTo('keydown', e => e.key === 'Escape' && this.close())
-            }
+            this.listenTo('keydown', e => this.options.escCloseTrigger && e.key === 'Escape' && this.close())
 
-            if (this.options.outsideScrollCloseTrigger) {
-                this.listenTo('scroll', e => this.isMinimized() || this.close(), { passive: true })
-                this.listen([window], 'scroll', e => this.isMinimized() || this.close(), { passive: true })
-            }
+            const closeOnScroll = () => this.options.outsideScrollCloseTrigger && !this.isMinimized() && this.close()
+            this.listenTo('scroll', closeOnScroll, { passive: true })
+            this.listen([window], 'scroll', closeOnScroll, { passive: true })
 
-            if (this.options.outsideClickCloseTrigger) {
-                this.listenTo('click', e => {
-                    e.target.closest('#prevue--wrapper') || this.isMinimized() || this.close()
-                })
-            }
+            this.listenTo('click', e => {
+                if (!this.options.outsideClickCloseTrigger) return
+                e.target.closest('#prevue--wrapper') || this.isMinimized() || this.close()
+            })
 
             // MOUSE EVENTS OTTIMIZZATI
             this.listen([window], 'mousemove', e => {
@@ -533,12 +584,9 @@
             this.el.sidePreviewIframe.removeAttribute('src')
             this.el.sidePreview.classList.remove('prevue--visible')
 
+            // Toglie anche la regola che rimuove X-Frame-Options/CSP per le
+            // navigazioni dentro l'anteprima (vedi setupPreviewHeaders).
             this.bg('teardownNavigationBlock')
-
-            if (this.changedSettings) {
-                this.changedSettings = false
-                this.bg('reinjectPrevueHere')
-            }
         }
 
         isOpen() {
@@ -660,17 +708,7 @@
             this.el.sidePreview.id = 'prevue--wrapper'
             this.el.sidePreview.style.width = defaultWidth
 
-            if (!this.options.displayUrl) {
-                this.el.sidePreview.classList.add('prevue--hidden-title')
-            }
-
-            if (this.options.urlPosition === 'bottom') {
-                this.el.sidePreview.classList.add('prevue--url-bottom')
-            }
-
-            if (this.options.openAnimation) {
-                this.el.sidePreview.style.transition = 'opacity .2s, left .2s, right .2s'
-            }
+            this.applyDisplayOptions()
 
             const dragger = document.createElement('div')
             dragger.id = 'prevue--dragger'
@@ -753,8 +791,9 @@
                     this.url = this.previousUrl + ''
                     this.sidePreview(this.previousUrlType)
                 } else {
+                    // Niente più reiniezione alla chiusura: le modifiche si
+                    // applicano da sole (listenForOptionChanges).
                     this.url = chrome.runtime.getURL('options.html')
-                    this.changedSettings = true
                     this.sidePreview('url')
                 }
             }
@@ -873,9 +912,16 @@
                 || /^https?:\/\/(www\.)?ti\.com\/lit\//i.test(this.url)
                 || /^https?:\/\/(?:www\.|m\.)?youtube\.com\//i.test(this.url)
                 || /^https?:\/\/youtu\.be\//i.test(this.url)
-            // Il ruleset che rimuove X-Frame-Options / CSP è SEMPRE attivo
-            // (abilitato all'avvio del service worker, vedi ensureCspRulesetEnabled
-            // in background.js). Nessun toggle per-anteprima → nessuna race.
+            // Rimozione di X-Frame-Options / CSP (vedi background.js):
+            //   - il PRIMO caricamento (redirect compresi) è coperto da una
+            //     regola dinamica sempre attiva, limitata alle richieste
+            //     avviate da prevue.html → nessuna attesa, nessuna race;
+            //   - le navigazioni successive DENTRO l'anteprima (link cliccati)
+            //     hanno come initiator il sito: per quelle serve la regola di
+            //     scheda, attiva solo finché l'anteprima è aperta. Non serve
+            //     aspettarla: arriva molto prima di qualsiasi clic.
+            this.bg('setupPreviewHeaders')
+
             if (skipSandbox) {
                 this.el.sidePreviewIframe.removeAttribute('sandbox')
                 this.withNavigationBlock(() => {

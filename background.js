@@ -150,47 +150,114 @@ function allowThirdPartyCookiesForEmbeddedSites() {
 allowThirdPartyCookiesForEmbeddedSites();
 
 // ============================================================================
-// RIMOZIONE HEADER ANTI-EMBEDDING — ruleset statico SEMPRE ATTIVO
+// RIMOZIONE HEADER ANTI-EMBEDDING — SOLO PER LE ANTEPRIME
 // ============================================================================
-// Il ruleset statico "disable-csp" (rules.json) rimuove X-Frame-Options e
-// Content-Security-Policy: senza, i siti mostrano "rifiutato la connessione"
-// dentro l'iframe dell'anteprima.
+// X-Frame-Options e Content-Security-Policy (frame-ancestors) fanno mostrare
+// "rifiutato la connessione" dentro l'iframe dell'anteprima, quindi vanno
+// tolti. Prima lo faceva rules.json su TUTTI gli iframe di TUTTI i siti, per
+// sempre: un indebolimento della protezione anti-clickjacking del web intero.
+// Ora la rimozione è limitata alle anteprime, in due parti:
 //
-// Prima veniva acceso per-anteprima e spento dopo 8s: abilitare un ruleset
-// statico via updateEnabledRulesets NON è affidabile per la richiesta subito
-// successiva (race) → fallimenti intermittenti. Soluzione: lo attiviamo UNA
-// VOLTA all'avvio del service worker — molto prima di qualsiasi anteprima — e
-// non lo spegniamo più. Nessuna race possibile.
+//  1. PREVIEW_FRAME_RULE — regola DINAMICA sempre attiva, ma solo per le
+//     richieste avviate da questa estensione (initiatorDomains = ID
+//     dell'estensione). È iframe.js, dentro prevue.html, ad avviare il
+//     caricamento del sito: il primo caricamento e tutti i suoi redirect
+//     (l'initiator non cambia lungo la catena) sono coperti. Nessun'altra
+//     pagina ha come initiator chrome-extension://<questo id>.
+//     Dinamica e non statica perché l'ID non è noto in rules.json; ed è
+//     registrata una volta e persiste, quindi niente race con la prima
+//     anteprima (era il problema del vecchio toggle per-anteprima del
+//     ruleset statico: updateEnabledRulesets non è affidabile per la
+//     richiesta subito successiva).
 //
-// PERÒ, essendo sempre attivo, il ruleset agisce su TUTTA la navigazione, non
-// solo sulle anteprime: va quindi tenuto il più stretto possibile.
-//   - resourceTypes: ["sub_frame"] — l'anteprima carica il sito in un iframe
-//     annidato dentro prevue.html, e questi header contano solo per i documenti
-//     incorniciati. Senza il filtro la regola colpiva anche script, XHR,
-//     immagini ecc. (il default DNR è "tutti i tipi tranne main_frame"), dove
-//     non serve a niente e può solo fare danni.
-//   - cross-origin-embedder-policy NON va più rimosso. Una pagina che invia
+//  2. Regola di SESSIONE per scheda (setupPreviewHeaders) — le navigazioni
+//     successive DENTRO l'anteprima (clic su un link del sito) hanno come
+//     initiator il sito stesso, non l'estensione, e la regola 1 non le
+//     vede. DNR non sa filtrare per frame, quindi si limita alla scheda e
+//     solo finché l'anteprima è aperta: tolta alla chiusura
+//     (teardownNavigationBlock), alla navigazione della pagina e alla
+//     chiusura della scheda.
+//
+// In entrambe:
+//   - resourceTypes: ["sub_frame"] — questi header contano solo per i
+//     documenti incorniciati.
+//   - cross-origin-embedder-policy NON va rimosso. Una pagina che invia
 //     COEP: require-corp (tipicamente l'interstiziale "Verifying you are
-//     human" di Cloudflare, che è un main_frame e quindi NON viene toccato)
-//     può incorporare un iframe cross-origin solo se anche quell'iframe invia
-//     COEP. Il widget Turnstile di challenges.cloudflare.com lo invia:
-//     rimuoverglielo faceva rifiutare l'iframe al genitore, il captcha non
-//     compariva mai e la pagina restava bloccata in attesa di verifica.
-//     Per l'anteprima quella rimozione non serve: prevue.html non imposta COEP,
-//     quindi un figlio con require-corp è comunque incorporabile.
+//     human" di Cloudflare) può incorporare un iframe cross-origin solo se
+//     anche quell'iframe invia COEP. Il widget Turnstile lo invia:
+//     rimuoverglielo faceva rifiutare l'iframe al genitore e il captcha non
+//     compariva mai. Per l'anteprima non serve: prevue.html non imposta COEP.
+//
+// rules.json ora contiene solo le eccezioni 'allow' per Cloudflare
+// (priorità 2): valgono anche contro la regola di scheda.
+const PREVIEW_FRAME_RULE_ID = 1;
+const PREVIEW_TAB_RULE_BASE = 1000000000; // + tabId: lontano dagli id del redirect
+const REMOVE_FRAMING_HEADERS = {
+    type: "modifyHeaders",
+    responseHeaders: [
+        { header: "x-frame-options", operation: "remove" },
+        { header: "content-security-policy", operation: "remove" },
+    ],
+};
+
+const previewTabRuleId = (tabId) => PREVIEW_TAB_RULE_BASE + (tabId % PREVIEW_TAB_RULE_BASE);
+
+// Tutte le modifiche alle regole passano da qui, in ordine. Senza coda,
+// chiusura e riapertura ravvicinate (il dragstart chiude l'anteprima
+// precedente subito prima di aprire la nuova) si accavallavano: il
+// teardown leggeva le regole DOPO che la nuova anteprima aveva aggiunto la
+// sua, e la cancellava.
+let ruleQueue = Promise.resolve();
+function queueRuleUpdate(task) {
+    ruleQueue = ruleQueue.then(task).catch((err) => {
+        console.log("[Prevue] Aggiornamento regole DNR fallito:", err?.message);
+    });
+    return ruleQueue;
+}
+
 async function ensureCspRulesetEnabled() {
-    if (!chrome.declarativeNetRequest || !chrome.declarativeNetRequest.updateEnabledRulesets) {
-        return;
-    }
+    if (!chrome.declarativeNetRequest) return;
     try {
+        // Ruleset statico: ormai solo le eccezioni per Cloudflare
         await chrome.declarativeNetRequest.updateEnabledRulesets({
-            enableRulesetIds: ["disable-csp"],
+            enableRulesetIds: ["cloudflare-allow"],
         });
-        const enabled = await chrome.declarativeNetRequest.getEnabledRulesets();
-        console.log("[Prevue] Ruleset statici attivi:", enabled);
+        // Remove + add nella stessa chiamata: idempotente, e aggiorna la
+        // regola se cambia tra una versione e l'altra.
+        await chrome.declarativeNetRequest.updateDynamicRules({
+            removeRuleIds: [PREVIEW_FRAME_RULE_ID],
+            addRules: [{
+                id: PREVIEW_FRAME_RULE_ID,
+                priority: 1,
+                action: REMOVE_FRAMING_HEADERS,
+                condition: {
+                    initiatorDomains: [chrome.runtime.id],
+                    resourceTypes: ["sub_frame"],
+                },
+            }],
+        });
     } catch (err) {
-        console.log("[Prevue] Attivazione ruleset 'disable-csp' fallita:", err.message);
+        console.log("[Prevue] Attivazione regole anti-embedding fallita:", err.message);
     }
+}
+
+function setupPreviewHeaders(tabId) {
+    const id = previewTabRuleId(tabId);
+    return queueRuleUpdate(() => chrome.declarativeNetRequest.updateSessionRules({
+        removeRuleIds: [id],
+        addRules: [{
+            id,
+            priority: 1,
+            action: REMOVE_FRAMING_HEADERS,
+            condition: { tabIds: [tabId], resourceTypes: ["sub_frame"] },
+        }],
+    }));
+}
+
+function removePreviewHeaders(tabId) {
+    return queueRuleUpdate(() => chrome.declarativeNetRequest.updateSessionRules({
+        removeRuleIds: [previewTabRuleId(tabId)],
+    }));
 }
 
 // Regole di sessione aggiunte in QUESTA vita del service worker: il cleanup
@@ -201,25 +268,31 @@ async function ensureCspRulesetEnabled() {
 const sessionRulesAddedThisLifetime = new Set();
 
 // Pulizia stato residuo all'avvio:
-//  - regole DINAMICHE lasciate da versioni sperimentali precedenti;
-//  - regole di SESSIONE rimaste appese — in particolare il redirect
-//    #prevue:sorry (anti frame-busting) che poteva "colare" se il service
-//    worker MV3 veniva terminato prima del suo cleanup a 10s, redirezionando
-//    ogni navigazione della scheda e rendendola inutilizzabile.
-// Queste regole sono sempre transitorie: azzerarle all'avvio è sicuro (le
-// anteprime aperte le riregistrano al bisogno) e guarisce eventuali leak.
-async function cleanupStaleRules() {
+//  - regole DINAMICHE lasciate da versioni sperimentali precedenti (tutte
+//    tranne PREVIEW_FRAME_RULE);
+//  - redirect #prevue:sorry (anti frame-busting) rimasti appesi: potevano
+//    "colare" se il service worker MV3 veniva terminato prima del suo
+//    cleanup a 10s, redirezionando ogni navigazione della scheda.
+// Le regole header per scheda NON si toccano: il worker si riavvia anche
+// con un'anteprima aperta (dopo ~30s di inattività) e toglierle romperebbe
+// i link cliccati dentro di essa. Si puliscono da sole a chiusura
+// dell'anteprima, navigazione della pagina o chiusura della scheda.
+function cleanupStaleRules() {
     if (!chrome.declarativeNetRequest) return;
-    try {
+    return queueRuleUpdate(async () => {
         const dynamic = await chrome.declarativeNetRequest.getDynamicRules();
-        if (dynamic.length) {
+        const staleDynamic = dynamic
+            .map((r) => r.id)
+            .filter((id) => id !== PREVIEW_FRAME_RULE_ID);
+        if (staleDynamic.length) {
             await chrome.declarativeNetRequest.updateDynamicRules({
-                removeRuleIds: dynamic.map((r) => r.id),
+                removeRuleIds: staleDynamic,
             });
-            console.log("[Prevue] Rimosse regole dinamiche residue:", dynamic.length);
+            console.log("[Prevue] Rimosse regole dinamiche residue:", staleDynamic.length);
         }
         const session = await chrome.declarativeNetRequest.getSessionRules();
         const staleIds = session
+            .filter((r) => r.action?.type === "redirect")
             .map((r) => r.id)
             .filter((id) => !sessionRulesAddedThisLifetime.has(id));
         if (staleIds.length) {
@@ -228,9 +301,7 @@ async function cleanupStaleRules() {
             });
             console.log("[Prevue] Rimosse regole di sessione residue:", staleIds.length);
         }
-    } catch (err) {
-        console.log("[Prevue] Cleanup regole residue fallito:", err.message);
-    }
+    });
 }
 
 ensureCspRulesetEnabled();
@@ -464,7 +535,7 @@ chrome.runtime.onMessage.addListener((req, sender, respond) => {
             const tabHost = new URL(sender.tab?.url || "").hostname;
             if (tabHost) condition.excludedInitiatorDomains = [tabHost];
         } catch (e) { }
-        chrome.declarativeNetRequest
+        queueRuleUpdate(() => chrome.declarativeNetRequest
             .updateSessionRules({
                 addRules: [{
                     id: ruleId,
@@ -480,29 +551,30 @@ chrome.runtime.onMessage.addListener((req, sender, respond) => {
             .catch((err) => {
                 console.log("setupImprobableApology failed:", err.message);
                 respond({ success: true });
-            });
+            }));
         // Auto-cleanup di sicurezza: la regola viene rimossa dopo 10s anche se
         // teardownNavigationBlock non viene mai chiamato.
         setTimeout(() => {
-            chrome.declarativeNetRequest
-                .updateSessionRules({ removeRuleIds: [ruleId] })
-                .catch(() => { });
+            queueRuleUpdate(() => chrome.declarativeNetRequest
+                .updateSessionRules({ removeRuleIds: [ruleId] }));
         }, 10000);
         return true;
+    } else if (req.action === "setupPreviewHeaders") {
+        if (tabId) setupPreviewHeaders(tabId);
     } else if (req.action === "teardownNavigationBlock") {
-        // Cleanup esplicito alla chiusura preview: rimuove tutte le regole di sessione
-        // del tab corrente.
+        // Cleanup esplicito alla chiusura preview: rimuove tutte le regole di
+        // sessione del tab corrente (redirect anti frame-busting e rimozione
+        // header per le navigazioni dentro l'anteprima).
         if (tabId) {
-            chrome.declarativeNetRequest.getSessionRules().then((rules) => {
+            queueRuleUpdate(async () => {
+                const rules = await chrome.declarativeNetRequest.getSessionRules();
                 const idsToRemove = rules
                     .filter((r) => r.condition?.tabIds?.includes(tabId))
                     .map((r) => r.id);
                 if (idsToRemove.length) {
-                    chrome.declarativeNetRequest
-                        .updateSessionRules({ removeRuleIds: idsToRemove })
-                        .catch(() => { });
+                    await chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: idsToRemove });
                 }
-            }).catch(() => { });
+            });
         }
     } else if (req.action === "reinjectPrevueEverywhere") {
         reinjectPrevueEverywhere().catch((err) => {
@@ -662,6 +734,17 @@ if (chrome.webRequest) {
         });
     }, subFrames, ["responseHeaders"]);
 
+    // La pagina della scheda cambia: l'anteprima è sparita con lei. Si toglie
+    // la regola header di scheda (altrimenti varrebbe per tutti gli iframe
+    // della pagina successiva) e i frame prevue.html ormai morti.
+    chrome.webRequest.onBeforeRequest.addListener((details) => {
+        if (details.tabId < 0 || details.frameId !== 0) return;
+        removePreviewHeaders(details.tabId);
+        prevueFramesLoaded.then(() => {
+            if (prevueContainerFrames.delete(details.tabId)) savePrevueFrames();
+        });
+    }, { urls: ["http://*/*", "https://*/*"], types: ["main_frame"] });
+
     // Rete di sicurezza: qualunque altro blocco di Edge sul frame (PDF servito
     // con un Content-Type sbagliato, ecc.). prevue.js toglie il sandbox una
     // sola volta per anteprima, quindi niente loop.
@@ -678,6 +761,7 @@ if (chrome.webRequest) {
 chrome.tabs.onRemoved.addListener((tabId) => {
     lastInjectionTime.delete(tabId);
     activeInjections.delete(tabId);
+    removePreviewHeaders(tabId);
     prevueFramesLoaded.then(() => {
         if (prevueContainerFrames.delete(tabId)) savePrevueFrames();
     });

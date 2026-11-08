@@ -76,7 +76,7 @@
   "declarative_net_request": {
     "rule_resources": [
       {
-        "id": "disable-csp",
+        "id": "cloudflare-allow",
         "enabled": true,
         "path": "rules.json"
       }
